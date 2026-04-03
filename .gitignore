@@ -1,0 +1,32 @@
+# Binaries for programs and plugins
+*.exe
+*.dll
+*.so
+*.dylib
+*.rpm
+*.deb
+*.tgz
+
+# Test binaries
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependencies
+/vendor/
+
+# Environment
+.env
+
+# IDE-specific files
+.idea/
+.vscode/
+
+# Build artifacts
+bin/
+pkg/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
