@@ -1,18 +1,26 @@
 # BitRoot: Operational Plan
 
-**Current Phase**: Phase 0 — CLI Foundation & Agentic Workflow
+**Current Phase**: Phase 1 — AI Integration
 **Status**: [ACTIVE]
 
 ---
 
-## Todo: Phase 2
+## Todo: Phase 1 — AI Integration
 
-## Done
+- [x] 1.1 Create `scripts/check.sh` (fmt, vet, test) and update `AGENTS.md`.
+- [x] 1.2 Setup `internal/ai` package and API client.
+- [x] 1.3 Implement `.env` support for API credentials.
+
+---
+
+## Archived
+
+### Foundation
 
 - [x] Initialize repository (.gitignore, .env.example, go.mod).
 - [x] Define project structure (`cmd/`, `internal/`).
 
-Phase 0
+### Phase 0 — CLI Foundation & Agentic Workflow
 
 - [x] 1. Rewrite PLAN.md into this operational format.
 - [x] 2. Implement `internal/scanner` skeleton (Struct & Interface).
@@ -26,9 +34,9 @@ Phase 0
 ## Technical Context (Current)
 
 - Entrypoint: `cmd/bitroot/main.go`
-- Package: `internal/scanner`
-- Using `context.Context` for cancellation.
+- Scanner package: `internal/scanner`
+- Next package: `internal/ai`
 
 ## Next Atomic Step
 
-Phase 0 complete. Prepare Phase 1 tasks.
+Phase 1 tasks complete. Define next integration milestone.

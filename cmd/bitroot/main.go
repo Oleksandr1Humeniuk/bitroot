@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"bitroot/internal/ai"
 	"bitroot/internal/scanner"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -20,6 +24,20 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if err := godotenv.Load(); err != nil {
+		logger.Warn("failed to load .env", "error", err)
+	}
+
+	aiClient, err := ai.NewClient(
+		os.Getenv("AI_BASE_URL"),
+		os.Getenv("AI_API_KEY"),
+		os.Getenv("AI_MODEL"),
+	)
+	if err != nil {
+		logger.Error("failed to initialize ai client", "error", err)
+		os.Exit(1)
+	}
 
 	rootDir := *path
 	workerCount := 4
@@ -53,7 +71,32 @@ func main() {
 			}
 
 			scannedFiles++
-			logger.Info("file", "name", metadata.FileName, "size", metadata.Size)
+
+			code, err := readFilePrefix(metadata.Path, 4000)
+			if err != nil {
+				failedFiles++
+				logger.Warn("failed to read file", "path", metadata.Path, "error", err)
+				continue
+			}
+
+			summary, err := aiClient.AnalyzeCode(ctx, string(code))
+			if err != nil {
+				failedFiles++
+				logger.Warn("ai analysis failed", "path", metadata.Path, "error", err)
+				continue
+			}
+
+			logger.Info("ai analysis", "file", metadata.Path, "summary", summary)
 		}
 	}
+}
+
+func readFilePrefix(path string, maxBytes int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	return io.ReadAll(io.LimitReader(file, maxBytes))
 }

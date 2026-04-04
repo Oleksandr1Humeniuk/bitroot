@@ -31,6 +31,7 @@ Before starting any task, the Agent MUST:
 - **Logging**: Use `slog` exclusively.
 - **Testing**: Table-driven tests for every new feature (`_test.go`).
 - **Standard Library**: Prefer `stdlib` over external dependencies.
+- Run `sh scripts/check.sh` before every commit.
 
 ## Communication
 

@@ -173,6 +173,7 @@ func TestScannerScanCancelsMidTraversal(t *testing.T) {
 	s := scanner.NewScanner(4, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	results, err := s.Scan(ctx, rootDir)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
