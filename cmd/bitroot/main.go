@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"bitroot/internal/ai"
@@ -50,45 +51,42 @@ func main() {
 		os.Exit(1)
 	}
 
-	var scannedFiles int
-	var failedFiles int
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 2)
 
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info("scan interrupted", "error", ctx.Err(), "scanned_files", scannedFiles, "failed_files", failedFiles)
-			return
-		case metadata, ok := <-results:
-			if !ok {
-				logger.Info("scan completed", "scanned_files", scannedFiles, "failed_files", failedFiles)
-				return
-			}
+	for metadata := range results {
+		if metadata.Error != nil {
+			logger.Warn("scan error", "path", metadata.Path, "error", metadata.Error)
+			continue
+		}
 
-			if metadata.Error != nil {
-				failedFiles++
-				logger.Warn("scan error", "path", metadata.Path, "error", metadata.Error)
-				continue
-			}
+		md := metadata
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-			scannedFiles++
+			logger.Info("processing file", "path", md.Path)
 
-			code, err := readFilePrefix(metadata.Path, 4000)
+			code, err := readFilePrefix(md.Path, 4000)
 			if err != nil {
-				failedFiles++
-				logger.Warn("failed to read file", "path", metadata.Path, "error", err)
-				continue
+				logger.Warn("failed to read file", "path", md.Path, "error", err)
+				return
 			}
 
 			summary, err := aiClient.AnalyzeCode(ctx, string(code))
 			if err != nil {
-				failedFiles++
-				logger.Warn("ai analysis failed", "path", metadata.Path, "error", err)
-				continue
+				logger.Warn("ai analysis failed", "path", md.Path, "error", err)
+				return
 			}
 
-			logger.Info("ai analysis", "file", metadata.Path, "summary", summary)
-		}
+			logger.Info("ai analysis", "file", md.Path, "summary", summary)
+		}()
 	}
+
+	wg.Wait()
+	logger.Info("scan completed")
 }
 
 func readFilePrefix(path string, maxBytes int64) ([]byte, error) {

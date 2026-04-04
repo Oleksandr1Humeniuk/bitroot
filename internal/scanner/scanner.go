@@ -65,13 +65,8 @@ func (s *Scanner) Scan(ctx context.Context, rootDir string) (<-chan FileMetadata
 		return nil, fmt.Errorf("root path %q is not a directory", rootDir)
 	}
 
-	bufferSize := s.WorkerCount * 8
-	if bufferSize < 8 {
-		bufferSize = 8
-	}
-
-	results := make(chan FileMetadata, bufferSize)
-	jobs := make(chan string, bufferSize)
+	results := make(chan FileMetadata, 100)
+	jobs := make(chan string, 100)
 	var wg sync.WaitGroup
 
 	for i := 0; i < s.WorkerCount; i++ {

@@ -39,7 +39,7 @@ func NewClient(baseURL, apiKey, model string) (*Client, error) {
 		apiKey:  apiKey,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 2 * time.Minute,
 		},
 	}, nil
 }
