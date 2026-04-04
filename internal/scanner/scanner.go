@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -16,7 +17,28 @@ type FileMetadata struct {
 	Path     string
 	FileName string
 	Size     int64
+	Language string
 	Error    error
+}
+
+var ignoredDirectories = map[string]struct{}{
+	".git":         {},
+	".next":        {},
+	".vercel":      {},
+	"build":        {},
+	"coverage":     {},
+	"node_modules": {},
+	"dist":         {},
+	"vendor":       {},
+}
+
+var languageByExtension = map[string]string{
+	".go":  "go",
+	".ts":  "typescript",
+	".js":  "javascript",
+	".tsx": "tsx",
+	".jsx": "jsx",
+	".md":  "markdown",
 }
 
 // FileScanner defines the scanner contract.
@@ -61,10 +83,6 @@ func (s *Scanner) Scan(ctx context.Context, rootDir string) (<-chan FileMetadata
 		return nil, fmt.Errorf("stat root directory %q: %w", rootDir, err)
 	}
 
-	if !rootInfo.IsDir() {
-		return nil, fmt.Errorf("root path %q is not a directory", rootDir)
-	}
-
 	results := make(chan FileMetadata, 100)
 	jobs := make(chan string, 100)
 	var wg sync.WaitGroup
@@ -76,6 +94,17 @@ func (s *Scanner) Scan(ctx context.Context, rootDir string) (<-chan FileMetadata
 
 	go func() {
 		defer close(jobs)
+
+		if !rootInfo.IsDir() {
+			if shouldProcessFile(rootDir) {
+				select {
+				case jobs <- rootDir:
+				case <-ctx.Done():
+				}
+			}
+
+			return
+		}
 
 		err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -90,6 +119,14 @@ func (s *Scanner) Scan(ctx context.Context, rootDir string) (<-chan FileMetadata
 			}
 
 			if d.IsDir() {
+				if shouldIgnoreDirectory(d.Name()) {
+					return filepath.SkipDir
+				}
+
+				return nil
+			}
+
+			if !shouldProcessFile(path) {
 				return nil
 			}
 
@@ -129,6 +166,7 @@ func (s *Scanner) worker(ctx context.Context, jobs <-chan string, results chan<-
 			metadata := FileMetadata{
 				Path:     path,
 				FileName: filepath.Base(path),
+				Language: detectLanguage(path),
 			}
 
 			info, err := os.Stat(path)
@@ -147,4 +185,28 @@ func (s *Scanner) worker(ctx context.Context, jobs <-chan string, results chan<-
 			}
 		}
 	}
+}
+
+func shouldIgnoreDirectory(name string) bool {
+	_, ok := ignoredDirectories[strings.ToLower(name)]
+	return ok
+}
+
+func detectLanguage(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	language, ok := languageByExtension[ext]
+	if !ok {
+		return ""
+	}
+
+	return language
+}
+
+func shouldProcessFile(path string) bool {
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, ".") {
+		return false
+	}
+
+	return detectLanguage(path) != ""
 }

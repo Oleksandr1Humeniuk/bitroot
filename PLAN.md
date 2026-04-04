@@ -1,15 +1,23 @@
 # BitRoot: Operational Plan
 
-**Current Phase**: Phase 1 — AI Integration
+**Current Phase**: Phase 2 — Context & Metadata
 **Status**: [ACTIVE]
 
 ---
 
-## Todo: Phase 1 — AI Integration
+## Phase 1 — AI Integration [COMPLETED]
 
 - [x] 1.1 Create `scripts/check.sh` (fmt, vet, test) and update `AGENTS.md`.
 - [x] 1.2 Setup `internal/ai` package and API client.
 - [x] 1.3 Implement `.env` support for API credentials.
+
+---
+
+## Todo: Phase 2 — Context & Metadata
+
+- [x] 2.1 Implement file type filtering (ignore `node_modules`, `.git`, binary files).
+- [x] 2.2 Add Language Detection to metadata (Go, TS, JS, etc.).
+- [x] 2.3 Implement project-level context (system prompt with project tree).
 
 ---
 
@@ -35,8 +43,8 @@
 
 - Entrypoint: `cmd/bitroot/main.go`
 - Scanner package: `internal/scanner`
-- Next package: `internal/ai`
+- AI package: `internal/ai`
 
 ## Next Atomic Step
 
-Phase 1 tasks complete. Define next integration milestone.
+Phase 2 tasks complete. Define Phase 3 scope.

@@ -58,6 +58,7 @@ func TestAnalyzeCode(t *testing.T) {
 		response   string
 		wantErr    bool
 		wantText   string
+		withCtx    bool
 	}{
 		{
 			name:       "success",
@@ -65,6 +66,14 @@ func TestAnalyzeCode(t *testing.T) {
 			response:   `{"choices":[{"message":{"content":"Go code scans files recursively."}}]}`,
 			wantErr:    false,
 			wantText:   "Go code scans files recursively.",
+		},
+		{
+			name:       "success with project context",
+			statusCode: http.StatusOK,
+			response:   `{"choices":[{"message":{"content":"Go code scans files recursively."}}]}`,
+			wantErr:    false,
+			wantText:   "Go code scans files recursively.",
+			withCtx:    true,
 		},
 		{
 			name:       "api error",
@@ -107,6 +116,12 @@ func TestAnalyzeCode(t *testing.T) {
 					t.Fatalf("prompt not found in request: %s", string(requestBody))
 				}
 
+				if tt.withCtx {
+					if !strings.Contains(string(requestBody), "You are analyzing code in the context of this project tree") {
+						t.Fatalf("project context not found in request: %s", string(requestBody))
+					}
+				}
+
 				w.WriteHeader(tt.statusCode)
 				_, _ = w.Write([]byte(tt.response))
 			}))
@@ -117,7 +132,12 @@ func TestAnalyzeCode(t *testing.T) {
 				t.Fatalf("new client failed: %v", err)
 			}
 
-			summary, err := client.AnalyzeCode(context.Background(), "package main")
+			var summary string
+			if tt.withCtx {
+				summary, err = client.AnalyzeCodeWithContext(context.Background(), "cmd/\ninternal/", "main.go", "package main")
+			} else {
+				summary, err = client.AnalyzeCode(context.Background(), "package main")
+			}
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")

@@ -13,6 +13,7 @@ import (
 )
 
 const summaryPrompt = "Summarize this code in one short, professional sentence."
+const projectContextPrompt = "You are analyzing code in the context of this project tree:\n%s"
 
 type Client struct {
 	baseURL    string
@@ -45,14 +46,33 @@ func NewClient(baseURL, apiKey, model string) (*Client, error) {
 }
 
 func (c *Client) AnalyzeCode(ctx context.Context, code string) (string, error) {
+	return c.analyzeCode(ctx, "", "", code)
+}
+
+func (c *Client) AnalyzeCodeWithContext(ctx context.Context, projectTree, filePath, code string) (string, error) {
+	return c.analyzeCode(ctx, projectTree, filePath, code)
+}
+
+func (c *Client) analyzeCode(ctx context.Context, projectTree, filePath, code string) (string, error) {
+	messages := make([]chatMessage, 0, 2)
+	if strings.TrimSpace(projectTree) != "" {
+		messages = append(messages, chatMessage{
+			Role:    "system",
+			Content: fmt.Sprintf(projectContextPrompt, projectTree),
+		})
+	}
+
+	userContent := summaryPrompt + "\n\n"
+	if strings.TrimSpace(filePath) != "" {
+		userContent += "File: " + filePath + "\n\n"
+	}
+	userContent += code
+
+	messages = append(messages, chatMessage{Role: "user", Content: userContent})
+
 	requestBody := chatCompletionRequest{
-		Model: c.model,
-		Messages: []chatMessage{
-			{
-				Role:    "user",
-				Content: summaryPrompt + "\n\n" + code,
-			},
-		},
+		Model:    c.model,
+		Messages: messages,
 	}
 
 	body, err := json.Marshal(requestBody)
