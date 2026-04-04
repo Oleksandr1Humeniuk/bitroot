@@ -2,6 +2,8 @@ package scanner
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -14,10 +16,15 @@ type FileMetadata struct {
 	Path     string
 	FileName string
 	Size     int64
-	Error    error // To capture errors during file processing
+	Error    error
 }
 
-// Scanner orchestrates the file scanning process using a worker pool.
+// FileScanner defines the scanner contract.
+type FileScanner interface {
+	Scan(ctx context.Context, rootDir string) (<-chan FileMetadata, error)
+}
+
+// Scanner orchestrates the file scanning process.
 type Scanner struct {
 	WorkerCount int
 	Logger      *slog.Logger
@@ -25,54 +32,85 @@ type Scanner struct {
 
 // NewScanner creates a new Scanner instance.
 func NewScanner(workerCount int, logger *slog.Logger) *Scanner {
+	if workerCount < 1 {
+		workerCount = 1
+	}
+
 	if logger == nil {
 		logger = slog.Default()
 	}
+
 	return &Scanner{
 		WorkerCount: workerCount,
 		Logger:      logger,
 	}
 }
 
-// Scan initiates the file scanning process for a given root directory.
-// It uses a worker pool to process files concurrently and returns a channel
-// for collecting FileMetadata, or an error if the scanning cannot be started.
+// Scan recursively discovers files under rootDir.
 func (s *Scanner) Scan(ctx context.Context, rootDir string) (<-chan FileMetadata, error) {
-	jobs := make(chan string)
-	results := make(chan FileMetadata)
-
-	var wg sync.WaitGroup
-
-	// Start workers
-	for i := 0; i < s.WorkerCount; i++ {
-		wg.Add(1)
-		go s.worker(ctx, i+1, jobs, results, &wg)
+	if ctx == nil {
+		return nil, errors.New("context is required")
 	}
 
-	// Walk the file system and send jobs
+	if rootDir == "" {
+		return nil, errors.New("root directory is required")
+	}
+
+	rootInfo, err := os.Stat(rootDir)
+	if err != nil {
+		return nil, fmt.Errorf("stat root directory %q: %w", rootDir, err)
+	}
+
+	if !rootInfo.IsDir() {
+		return nil, fmt.Errorf("root path %q is not a directory", rootDir)
+	}
+
+	bufferSize := s.WorkerCount * 8
+	if bufferSize < 8 {
+		bufferSize = 8
+	}
+
+	results := make(chan FileMetadata, bufferSize)
+	jobs := make(chan string, bufferSize)
+	var wg sync.WaitGroup
+
+	for i := 0; i < s.WorkerCount; i++ {
+		wg.Add(1)
+		go s.worker(ctx, jobs, results, &wg)
+	}
+
 	go func() {
 		defer close(jobs)
-		err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				s.Logger.Error("filepath.WalkDir error", "path", path, "error", err)
-				// Continue walking even if there's an error with one file/directory
+
+		err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				s.Logger.Error("walk entry failed", "path", path, "error", walkErr)
 				return nil
 			}
-			if !d.IsDir() {
-				select {
-				case jobs <- path:
-				case <-ctx.Done():
-					return ctx.Err() // Stop walking if context is cancelled
-				}
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
 			}
-			return nil
+
+			if d.IsDir() {
+				return nil
+			}
+
+			select {
+			case jobs <- path:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		})
-		if err != nil && err != context.Canceled {
-			s.Logger.Error("Error walking directory", "rootDir", rootDir, "error", err)
+
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.Logger.Error("walk failed", "root_dir", rootDir, "error", err)
 		}
 	}()
 
-	// Wait for all workers to finish and then close the results channel
 	go func() {
 		wg.Wait()
 		close(results)
@@ -81,48 +119,37 @@ func (s *Scanner) Scan(ctx context.Context, rootDir string) (<-chan FileMetadata
 	return results, nil
 }
 
-// worker is a goroutine that processes file scanning jobs.
-func (s *Scanner) worker(ctx context.Context, id int, jobs <-chan string, results chan<- FileMetadata, wg *sync.WaitGroup) {
+func (s *Scanner) worker(ctx context.Context, jobs <-chan string, results chan<- FileMetadata, wg *sync.WaitGroup) {
 	defer wg.Done()
+
 	for {
 		select {
-		case job, ok := <-jobs:
+		case <-ctx.Done():
+			return
+		case path, ok := <-jobs:
 			if !ok {
-				s.Logger.Debug("Worker received close signal on jobs channel", "workerID", id)
-				return // Jobs channel closed, no more jobs
+				return
 			}
-			s.Logger.Debug("Worker processing file", "workerID", id, "file", job)
 
 			metadata := FileMetadata{
-				Path:     job,
-				FileName: filepath.Base(job),
+				Path:     path,
+				FileName: filepath.Base(path),
 			}
 
-			f, err := os.Open(job)
+			info, err := os.Stat(path)
 			if err != nil {
-				metadata.Error = err
-				s.Logger.Error("Error opening file", "workerID", id, "file", job, "error", err)
+				metadata.Error = fmt.Errorf("stat file %q: %w", path, err)
+				s.Logger.Warn("file stat failed", "path", path, "error", err)
 			} else {
-				defer f.Close()
-				info, err := f.Stat()
-				if err != nil {
-					metadata.Error = err
-					s.Logger.Error("Error statting file after opening", "workerID", id, "file", job, "error", err)
-				} else {
-					metadata.Size = info.Size()
-				}
+				metadata.Size = info.Size()
+				s.Logger.Info("found file", "path", path, "size", metadata.Size)
 			}
 
-			// Send the metadata (with or without error) to the results channel
 			select {
 			case results <- metadata:
 			case <-ctx.Done():
-				s.Logger.Warn("Worker context cancelled while sending result", "workerID", id, "file", job)
-				return // Context cancelled, stop processing
+				return
 			}
-		case <-ctx.Done():
-			s.Logger.Warn("Worker context cancelled while waiting for job", "workerID", id)
-			return // Context cancelled, stop processing
 		}
 	}
 }
