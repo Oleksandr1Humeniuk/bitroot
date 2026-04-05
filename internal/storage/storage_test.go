@@ -377,3 +377,26 @@ func TestProjectIndexGet(t *testing.T) {
 		t.Fatal("expected missing entry to be absent")
 	}
 }
+
+func TestProjectIndexSearch(t *testing.T) {
+	t.Parallel()
+
+	index := &ProjectIndex{Files: make(map[string]FileEntry)}
+	if err := index.Upsert(FileEntry{Path: "a.go", Summary: "a", Embedding: []float64{1, 0}}); err != nil {
+		t.Fatalf("upsert a failed: %v", err)
+	}
+	if err := index.Upsert(FileEntry{Path: "b.go", Summary: "b", Embedding: []float64{0, 1}}); err != nil {
+		t.Fatalf("upsert b failed: %v", err)
+	}
+
+	results, err := index.Search([]float64{1, 0}, 1)
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("result size mismatch: got %d want 1", len(results))
+	}
+	if results[0].Path != "a.go" {
+		t.Fatalf("unexpected top result: got %q want %q", results[0].Path, "a.go")
+	}
+}

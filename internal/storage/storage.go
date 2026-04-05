@@ -170,6 +170,10 @@ func (p *ProjectIndex) SearchSimilar(query []float64, limit int, excludePath str
 	return results, nil
 }
 
+func (p *ProjectIndex) Search(query []float64, limit int) ([]SearchResult, error) {
+	return p.SearchSimilar(query, limit, "")
+}
+
 func (p *ProjectIndex) ensureVectorDimension() {
 	if p.VectorDimension > 0 {
 		return

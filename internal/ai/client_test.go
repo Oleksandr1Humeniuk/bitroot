@@ -454,3 +454,26 @@ func TestAnswerQuestionWithContext(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateAnswer(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"answer from context"}}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL+"/v1", "test-key", "test-model")
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	answer, err := client.GenerateAnswer(context.Background(), "Q", "C")
+	if err != nil {
+		t.Fatalf("generate answer failed: %v", err)
+	}
+	if answer != "answer from context" {
+		t.Fatalf("answer mismatch: got %q", answer)
+	}
+}

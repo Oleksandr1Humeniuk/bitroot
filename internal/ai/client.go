@@ -220,6 +220,10 @@ func (c *Client) AnswerQuestionWithContext(ctx context.Context, question, semant
 	}
 }
 
+func (c *Client) GenerateAnswer(ctx context.Context, question, semanticContext string) (string, error) {
+	return c.AnswerQuestionWithContext(ctx, question, semanticContext)
+}
+
 func (c *Client) analyzeCode(ctx context.Context, projectTree, filePath, code string) (AnalyzeResult, error) {
 	messages := make([]chatMessage, 0, 2)
 	if strings.TrimSpace(projectTree) != "" {

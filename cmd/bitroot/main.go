@@ -55,6 +55,13 @@ func main() {
 	topK := flag.Int("topk", 5, "Maximum number of semantic matches returned by --ask")
 	flag.Parse()
 
+	if strings.TrimSpace(*ask) == "" && flag.NArg() > 0 && flag.Arg(0) == "ask" {
+		query := strings.TrimSpace(strings.Join(flag.Args()[1:], " "))
+		if query != "" {
+			*ask = query
+		}
+	}
+
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
@@ -111,19 +118,22 @@ func main() {
 		indexRoot = filepath.Dir(rootDir)
 	}
 
-	if strings.TrimSpace(*ask) != "" {
-		if err := runAskMode(baseCtx, logger, aiClient, indexRoot, *ask, *topK); err != nil {
+	if err := aiClient.Ping(baseCtx); err != nil {
+		log.Fatal(err)
+	}
+
+	projectIndex, indexPath, hasExistingIndex := loadProjectIndex(logger, indexRoot)
+
+	if strings.TrimSpace(*ask) != "" && hasExistingIndex && len(projectIndex.Files) > 0 {
+		logger.Info("Executing semantic query", "query", *ask)
+		askCtx, cancelAsk := context.WithTimeout(baseCtx, 30*time.Second)
+		defer cancelAsk()
+		if err := runAskMode(askCtx, logger, aiClient, projectIndex, *ask, *topK); err != nil {
 			logger.Error("ask command failed", "error", err)
 			os.Exit(1)
 		}
 		return
 	}
-
-	if err := aiClient.Ping(baseCtx); err != nil {
-		log.Fatal(err)
-	}
-
-	projectIndex, indexPath := loadProjectIndex(logger, indexRoot)
 
 	workerCount := 4
 	logger.Info("starting scanner", "path", rootDir, "workers", workerCount)
@@ -288,6 +298,16 @@ func main() {
 		logger.Info("index saved", "path", indexPath)
 	}
 
+	if strings.TrimSpace(*ask) != "" {
+		logger.Info("Executing semantic query", "query", *ask)
+		askCtx, cancelAsk := context.WithTimeout(baseCtx, 30*time.Second)
+		defer cancelAsk()
+		if err := runAskMode(askCtx, logger, aiClient, projectIndex, *ask, *topK); err != nil {
+			logger.Error("ask command failed", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	select {
 	case <-wasInterrupted:
 		logger.Info("graceful shutdown complete", "index_path", indexPath)
@@ -442,7 +462,7 @@ func trackAIError(tel *telemetry, err error) {
 	}
 }
 
-func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, indexRoot, query string, topK int) error {
+func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, projectIndex *storage.ProjectIndex, query string, topK int) error {
 	if strings.TrimSpace(query) == "" {
 		return errors.New("ask query is required")
 	}
@@ -451,7 +471,6 @@ func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, i
 		topK = 5
 	}
 
-	projectIndex, _ := loadProjectIndex(logger, indexRoot)
 	if len(projectIndex.Files) == 0 {
 		return errors.New("vector store is empty; run scan first")
 	}
@@ -461,18 +480,17 @@ func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, i
 		return err
 	}
 
-	results, err := projectIndex.SearchSimilar(queryEmbedding, topK, "")
+	results, err := projectIndex.Search(queryEmbedding, topK)
 	if err != nil {
 		return err
 	}
-
 	if len(results) == 0 {
-		logger.Info("no semantic matches found", "query", query)
+		fmt.Printf("No semantic data found. Please run a full scan first without the --ask flag.\n")
 		return nil
 	}
 
 	semanticContext, sources := buildRAGContext(results)
-	answer, err := aiClient.AnswerQuestionWithContext(ctx, query, semanticContext)
+	answer, err := aiClient.GenerateAnswer(ctx, query, semanticContext)
 	if err != nil {
 		return err
 	}
@@ -485,7 +503,8 @@ func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, i
 			fmt.Printf("   %s\n", result.Summary)
 		}
 	}
-	fmt.Printf("\nAnswer:\n%s\n", answer)
+
+	fmt.Printf("\n=== BITROOT ANSWER ===\n%s\n", answer)
 
 	if len(sources) > 0 {
 		fmt.Printf("\nSources:\n")
@@ -552,10 +571,11 @@ func chunkRefs(chunks []scanner.CodeChunk, max int) []string {
 	return refs
 }
 
-func loadProjectIndex(logger *slog.Logger, indexRoot string) (*storage.ProjectIndex, string) {
+func loadProjectIndex(logger *slog.Logger, indexRoot string) (*storage.ProjectIndex, string, bool) {
 	indexPath := filepath.Join(indexRoot, ".bitroot_vector_store.json")
 	legacyIndexPath := filepath.Join(indexRoot, ".bitroot_index.json")
 	projectIndex := &storage.ProjectIndex{}
+	hasExistingIndex := false
 
 	if err := projectIndex.Load(indexPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -568,6 +588,7 @@ func loadProjectIndex(logger *slog.Logger, indexRoot string) (*storage.ProjectIn
 					Files:       make(map[string]storage.FileEntry),
 				}
 			} else {
+				hasExistingIndex = true
 				logger.Info("migrated legacy index into vector store", "legacy_path", legacyIndexPath)
 			}
 		} else {
@@ -577,6 +598,8 @@ func loadProjectIndex(logger *slog.Logger, indexRoot string) (*storage.ProjectIn
 				Files:       make(map[string]storage.FileEntry),
 			}
 		}
+	} else {
+		hasExistingIndex = true
 	}
 
 	if projectIndex.Files == nil {
@@ -584,5 +607,5 @@ func loadProjectIndex(logger *slog.Logger, indexRoot string) (*storage.ProjectIn
 	}
 	projectIndex.ProjectRoot = indexRoot
 
-	return projectIndex, indexPath
+	return projectIndex, indexPath, hasExistingIndex
 }
