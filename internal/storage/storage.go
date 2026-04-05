@@ -15,6 +15,7 @@ type FileEntry struct {
 	Hash      string    `json:"hash"`
 	Language  string    `json:"language"`
 	Summary   string    `json:"summary"`
+	Refs      []string  `json:"refs,omitempty"`
 	Embedding []float64 `json:"embedding,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -30,6 +31,7 @@ type SearchResult struct {
 	Path     string
 	Summary  string
 	Language string
+	Refs     []string
 	Score    float64
 }
 
@@ -149,6 +151,7 @@ func (p *ProjectIndex) SearchSimilar(query []float64, limit int, excludePath str
 			Path:     entry.Path,
 			Summary:  entry.Summary,
 			Language: entry.Language,
+			Refs:     append([]string(nil), entry.Refs...),
 			Score:    score,
 		})
 	}

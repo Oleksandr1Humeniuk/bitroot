@@ -30,6 +30,7 @@ func TestProjectIndexSaveLoad(t *testing.T) {
 						Hash:      "abc123",
 						Language:  "go",
 						Summary:   "Main entrypoint",
+						Refs:      []string{"main.go:1-20"},
 						Embedding: []float64{0.25, 0.5, 0.75},
 						UpdatedAt: time.Now().UTC().Truncate(time.Second),
 					},
@@ -115,6 +116,15 @@ func TestProjectIndexSaveLoad(t *testing.T) {
 					t.Fatalf("embedding length mismatch for %q: got %d want %d", key, len(got.Embedding), len(expected.Embedding))
 				}
 
+				if len(got.Refs) != len(expected.Refs) {
+					t.Fatalf("refs length mismatch for %q: got %d want %d", key, len(got.Refs), len(expected.Refs))
+				}
+				for i := range expected.Refs {
+					if got.Refs[i] != expected.Refs[i] {
+						t.Fatalf("ref mismatch for %q at index %d: got %q want %q", key, i, got.Refs[i], expected.Refs[i])
+					}
+				}
+
 				for i := range expected.Embedding {
 					if got.Embedding[i] != expected.Embedding[i] {
 						t.Fatalf("embedding mismatch for %q at index %d: got %f want %f", key, i, got.Embedding[i], expected.Embedding[i])
@@ -141,7 +151,7 @@ func TestProjectIndexUpsertAndSearchSimilar(t *testing.T) {
 		{
 			name: "returns similarity-ranked results",
 			entries: []FileEntry{
-				{Path: "a.go", Summary: "a", Embedding: []float64{1, 0}},
+				{Path: "a.go", Summary: "a", Refs: []string{"a.go:1-9"}, Embedding: []float64{1, 0}},
 				{Path: "b.go", Summary: "b", Embedding: []float64{0.8, 0.2}},
 				{Path: "c.go", Summary: "c", Embedding: []float64{0, 1}},
 			},
@@ -212,6 +222,10 @@ func TestProjectIndexUpsertAndSearchSimilar(t *testing.T) {
 
 			if tt.wantResultSize > 0 && results[0].Path != tt.wantFirstPath {
 				t.Fatalf("first result mismatch: got %q want %q", results[0].Path, tt.wantFirstPath)
+			}
+
+			if tt.wantResultSize > 0 && tt.wantFirstPath == "a.go" && len(results[0].Refs) == 0 {
+				t.Fatal("expected refs in first result")
 			}
 
 			for i := range results {

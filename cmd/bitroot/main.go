@@ -40,6 +40,13 @@ type telemetry struct {
 	totalPromptTokensHint int64
 }
 
+type citationSource struct {
+	Index int
+	Path  string
+	Refs  []string
+	Score float64
+}
+
 func main() {
 	startTime := time.Now()
 
@@ -249,6 +256,7 @@ func main() {
 				Hash:      md.Hash,
 				Language:  md.Language,
 				Summary:   fileSummary,
+				Refs:      chunkRefs(chunks, 5),
 				Embedding: embedding,
 				UpdatedAt: time.Now().UTC(),
 			})
@@ -463,7 +471,7 @@ func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, i
 		return nil
 	}
 
-	semanticContext := buildRAGContext(results)
+	semanticContext, sources := buildRAGContext(results)
 	answer, err := aiClient.AnswerQuestionWithContext(ctx, query, semanticContext)
 	if err != nil {
 		return err
@@ -479,27 +487,69 @@ func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, i
 	}
 	fmt.Printf("\nAnswer:\n%s\n", answer)
 
+	if len(sources) > 0 {
+		fmt.Printf("\nSources:\n")
+		for _, source := range sources {
+			if len(source.Refs) > 0 {
+				fmt.Printf("[%d] %s (%s)\n", source.Index, source.Path, strings.Join(source.Refs, ", "))
+			} else {
+				fmt.Printf("[%d] %s\n", source.Index, source.Path)
+			}
+		}
+	}
+
 	return nil
 }
 
-func buildRAGContext(results []storage.SearchResult) string {
+func buildRAGContext(results []storage.SearchResult) (string, []citationSource) {
 	if len(results) == 0 {
-		return "(no semantic context)"
+		return "(no semantic context)", nil
 	}
 
 	var b strings.Builder
+	sources := make([]citationSource, 0, len(results))
 	for i, result := range results {
 		b.WriteString(fmt.Sprintf("[%d] Path: %s\n", i+1, result.Path))
 		b.WriteString(fmt.Sprintf("Score: %.4f\n", result.Score))
+		if len(result.Refs) > 0 {
+			b.WriteString("Line references: ")
+			b.WriteString(strings.Join(result.Refs, ", "))
+			b.WriteString("\n")
+		}
 		if strings.TrimSpace(result.Summary) != "" {
 			b.WriteString("Summary: ")
 			b.WriteString(strings.TrimSpace(result.Summary))
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
+
+		sources = append(sources, citationSource{
+			Index: i + 1,
+			Path:  result.Path,
+			Refs:  append([]string(nil), result.Refs...),
+			Score: result.Score,
+		})
 	}
 
-	return strings.TrimSpace(b.String())
+	return strings.TrimSpace(b.String()), sources
+}
+
+func chunkRefs(chunks []scanner.CodeChunk, max int) []string {
+	if len(chunks) == 0 || max <= 0 {
+		return nil
+	}
+
+	limit := max
+	if len(chunks) < limit {
+		limit = len(chunks)
+	}
+
+	refs := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		refs = append(refs, chunks[i].Location())
+	}
+
+	return refs
 }
 
 func loadProjectIndex(logger *slog.Logger, indexRoot string) (*storage.ProjectIndex, string) {

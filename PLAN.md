@@ -1,5 +1,5 @@
 BitRoot: Operational Plan
-Current Status: Phase 2.2 — Semantic Retrieval & QA
+Current Status: Phase 2.3 — Semantic Retrieval & QA [COMPLETED]
 Tech Stack: Go 1.26+, OpenRouter (Qwen + OpenAI Embeddings), JSON Vector Store
 
 Phase 1: Core AI Infrastructure [COMPLETED]
@@ -21,7 +21,7 @@ Phase 1: Core AI Infrastructure [COMPLETED]
 
 [x] Observability: Token usage tracking and cost telemetry dashboard.
 
-Phase 2: Context & Semantic Intelligence [IN PROGRESS]
+Phase 2: Context & Semantic Intelligence [COMPLETED]
 2.1 File Analysis & Caching [COMPLETED]
 [x] Language detection and SHA-256 content hashing.
 
@@ -43,7 +43,7 @@ Phase 2: Context & Semantic Intelligence [IN PROGRESS]
 
 [x] Context Injection: RAG logic to feed top-K relevant chunks into the prompt.
 
-[ ] Source Citations: AI responses with file paths and line references.
+[x] Source Citations: AI responses with file paths and line references.
 
 Phase 3: Advanced Agentic Features [BACKLOG]
 [ ] Auto-Fixer: Agentic loop for suggesting and applying code refactoring.
@@ -62,4 +62,4 @@ AI: internal/ai (Handling chat & embeddings)
 Storage: internal/storage (Managing JSON vector database)
 
 Next Atomic Step
-Implement Task 2.3.4: Add source citations to semantic answers with file path references.
+Implement Task 3.1: Start Auto-Fixer agentic loop design.

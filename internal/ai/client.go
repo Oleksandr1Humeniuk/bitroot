@@ -15,7 +15,7 @@ import (
 
 const summaryPrompt = "Summarize this code in one short, professional sentence. Return strict JSON with keys: summary (string), bugs (array), suggestions (array)."
 const projectContextPrompt = "You are analyzing code in the context of this project tree:\n%s"
-const qaWithContextSystemPrompt = "You are an expert software engineering assistant. Answer the question using only the provided semantic context. If context is insufficient, say so clearly."
+const qaWithContextSystemPrompt = "You are an expert software engineering assistant. Answer using only the provided semantic context. If context is insufficient, say so clearly. Cite sources inline with [n] markers that map to the provided context entries."
 
 const (
 	EmbeddingProviderOpenAI = "openai"
