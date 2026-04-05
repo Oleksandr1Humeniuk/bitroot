@@ -11,6 +11,7 @@ type FileEntry struct {
 	Hash      string    `json:"hash"`
 	Language  string    `json:"language"`
 	Summary   string    `json:"summary"`
+	Embedding []float64 `json:"embedding,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

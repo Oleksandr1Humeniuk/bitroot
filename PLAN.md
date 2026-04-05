@@ -45,9 +45,9 @@
 
 ## Phase 2.1 — RAG & Semantic Context (Next)
 
-- [ ] 2.1.1 Chunking Strategy: Develop logic to split large source files into logical blocks (functions, classes, or blocks) to fit model context limits.
+- [x] 2.1.1 Chunking Strategy: Develop logic to split large source files into logical blocks (functions, classes, or blocks) to fit model context limits.
 
-- [ ] 2.1.2 Embeddings Integration: Integrate embedding models (via Ollama or OpenAI) to represent code semantically.
+- [x] 2.1.2 Embeddings Integration: Integrate embedding models (via Ollama or OpenAI) to represent code semantically.
 
 - [ ] 2.1.3 Vector Store Implementation: Replace storage/index.json with a local vector database or an embedded semantic search engine (e.g., ChromaDB or a native Go implementation).
 
@@ -80,4 +80,4 @@
 
 ## Next Atomic Step
 
-Implement task #2.1.1: chunking strategy for large source files.
+Implement task #2.1.3: vector store implementation for semantic search.

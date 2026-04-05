@@ -28,6 +28,7 @@ func TestProjectIndexSaveLoad(t *testing.T) {
 						Hash:      "abc123",
 						Language:  "go",
 						Summary:   "Main entrypoint",
+						Embedding: []float64{0.25, 0.5, 0.75},
 						UpdatedAt: time.Now().UTC().Truncate(time.Second),
 					},
 				},
@@ -97,6 +98,16 @@ func TestProjectIndexSaveLoad(t *testing.T) {
 
 				if got.Path != expected.Path || got.Hash != expected.Hash || got.Language != expected.Language || got.Summary != expected.Summary {
 					t.Fatalf("entry mismatch for %q", key)
+				}
+
+				if len(got.Embedding) != len(expected.Embedding) {
+					t.Fatalf("embedding length mismatch for %q: got %d want %d", key, len(got.Embedding), len(expected.Embedding))
+				}
+
+				for i := range expected.Embedding {
+					if got.Embedding[i] != expected.Embedding[i] {
+						t.Fatalf("embedding mismatch for %q at index %d: got %f want %f", key, i, got.Embedding[i], expected.Embedding[i])
+					}
 				}
 			}
 		})

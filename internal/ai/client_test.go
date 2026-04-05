@@ -211,3 +211,130 @@ func TestAnalyzeCodeRetriesOnRateLimit(t *testing.T) {
 		t.Fatalf("expected 3 attempts, got %d", result.Attempts)
 	}
 }
+
+func TestEmbedText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		provider  string
+		model     string
+		handler   http.HandlerFunc
+		wantErr   bool
+		wantType  string
+		wantLen   int
+		wantCalls int32
+	}{
+		{
+			name:     "openai provider success",
+			provider: EmbeddingProviderOpenAI,
+			model:    "text-embedding-3-small",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/embeddings" {
+					t.Fatalf("unexpected path: %s", r.URL.Path)
+				}
+				if auth := r.Header.Get("Authorization"); !strings.HasPrefix(auth, "Bearer ") {
+					t.Fatalf("missing auth header: %s", auth)
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2,0.3]}]}`))
+			},
+			wantLen:   3,
+			wantCalls: 1,
+		},
+		{
+			name:     "ollama provider success",
+			provider: EmbeddingProviderOllama,
+			model:    "nomic-embed-text",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/embeddings" {
+					t.Fatalf("unexpected path: %s", r.URL.Path)
+				}
+				if auth := r.Header.Get("Authorization"); auth != "" {
+					t.Fatalf("expected no auth header, got %s", auth)
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"embedding":[1,2,3,4]}`))
+			},
+			wantLen:   4,
+			wantCalls: 1,
+		},
+		{
+			name:     "rate limit retries",
+			provider: EmbeddingProviderOpenAI,
+			model:    "text-embedding-3-small",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":"rate limit"}`))
+			},
+			wantErr:   true,
+			wantType:  "logic",
+			wantCalls: 4,
+		},
+		{
+			name:     "unsupported provider",
+			provider: "custom",
+			model:    "x",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			},
+			wantErr:   true,
+			wantType:  "transport",
+			wantCalls: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				tt.handler(w, r)
+			}))
+			defer server.Close()
+
+			client, err := NewClient(server.URL+"/v1", "test-key", "test-model")
+			if err != nil {
+				t.Fatalf("new client failed: %v", err)
+			}
+			client.ConfigureEmbeddings(tt.provider, tt.model)
+
+			embedding, err := client.EmbedText(context.Background(), "func main() {}")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+
+				switch tt.wantType {
+				case "logic":
+					var logicErr APILogicError
+					if !strings.Contains(err.Error(), "api error") {
+						t.Fatalf("expected logic error, got: %v", err)
+					}
+					_ = logicErr
+				case "transport":
+					var transportErr TransportError
+					if !strings.Contains(err.Error(), "unsupported embedding provider") {
+						t.Fatalf("expected transport error, got: %v", err)
+					}
+					_ = transportErr
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(embedding) != tt.wantLen {
+					t.Fatalf("embedding length mismatch: got %d want %d", len(embedding), tt.wantLen)
+				}
+			}
+
+			if gotCalls := calls.Load(); gotCalls != tt.wantCalls {
+				t.Fatalf("request call count mismatch: got %d want %d", gotCalls, tt.wantCalls)
+			}
+		})
+	}
+}

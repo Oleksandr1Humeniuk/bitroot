@@ -30,6 +30,8 @@ type telemetry struct {
 	filesAnalyzed         int64
 	filesSkippedCache     int64
 	filesFailed           int64
+	embeddingsGenerated   int64
+	embeddingsFailed      int64
 	totalAIAttempts       int64
 	authErrors            int64
 	transportErrors       int64
@@ -77,6 +79,11 @@ func main() {
 		logger.Error("failed to initialize ai client", "error", err)
 		os.Exit(1)
 	}
+
+	aiClient.ConfigureEmbeddings(
+		os.Getenv("AI_EMBEDDING_PROVIDER"),
+		os.Getenv("AI_EMBEDDING_MODEL"),
+	)
 
 	if err := aiClient.Ping(baseCtx); err != nil {
 		log.Fatal(err)
@@ -156,7 +163,8 @@ func main() {
 
 		indexMu.Lock()
 		cached, ok := projectIndex.Files[metadata.Path]
-		unchanged := ok && cached.Hash == metadata.Hash
+		hasEmbedding := len(cached.Embedding) > 0
+		unchanged := ok && cached.Hash == metadata.Hash && hasEmbedding
 		_, processing := inFlight[metadata.Path]
 		if !unchanged && !processing {
 			inFlight[metadata.Path] = struct{}{}
@@ -186,34 +194,61 @@ func main() {
 
 			logger.Info("processing file", "path", md.Path)
 
-			code, err := readFilePrefix(baseCtx, md.Path, 4000)
+			code, err := readFilePrefix(baseCtx, md.Path, md.Size)
 			if err != nil {
 				atomic.AddInt64(&tel.filesFailed, 1)
 				atomic.AddInt64(&tel.transportErrors, 1)
 				logger.Warn("failed to read file", "path", md.Path, "error", err)
 				return
 			}
-			atomic.AddInt64(&tel.totalPromptTokensHint, int64(scanner.EstimateTokens(string(code))))
 
-			result, err := aiClient.AnalyzeCodeWithContextDetailed(baseCtx, projectTree, md.Path, string(code))
-			atomic.AddInt64(&tel.totalAIAttempts, int64(result.Attempts))
-			if err != nil {
+			chunkOptions := scanner.DefaultChunkOptions()
+			chunks := scanner.ChunkSource(md.Path, md.Language, string(code), chunkOptions)
+			if len(chunks) == 0 {
 				atomic.AddInt64(&tel.filesFailed, 1)
-				var authErr ai.AuthError
-				var transportErr ai.TransportError
-				var logicErr ai.APILogicError
-				switch {
-				case errors.As(err, &authErr):
-					atomic.AddInt64(&tel.authErrors, 1)
-				case errors.As(err, &transportErr):
-					atomic.AddInt64(&tel.transportErrors, 1)
-				case errors.As(err, &logicErr):
-					atomic.AddInt64(&tel.apiLogicErrors, 1)
-				default:
-					atomic.AddInt64(&tel.transportErrors, 1)
-				}
-				logger.Warn("ai analysis failed", "path", md.Path, "error", err)
+				logger.Warn("chunking produced no content", "path", md.Path)
 				return
+			}
+
+			chunkSummaries := make([]string, 0, len(chunks))
+			for _, chunk := range chunks {
+				atomic.AddInt64(&tel.totalPromptTokensHint, int64(chunk.TokenEstimate))
+
+				result, err := aiClient.AnalyzeCodeWithContextDetailed(baseCtx, projectTree, chunk.Location(), chunk.Content)
+				atomic.AddInt64(&tel.totalAIAttempts, int64(result.Attempts))
+				if err != nil {
+					atomic.AddInt64(&tel.filesFailed, 1)
+					trackAIError(tel, err)
+					logger.Warn("ai chunk analysis failed", "path", md.Path, "chunk", chunk.Location(), "error", err)
+					return
+				}
+
+				chunkSummaries = append(chunkSummaries, chunk.Location()+": "+result.Summary)
+			}
+
+			fileSummary := strings.Join(chunkSummaries, " ")
+			if len(chunkSummaries) > 1 {
+				aggregatedPrompt := "Synthesize these chunk summaries into one short, professional file summary:\n\n- " + strings.Join(chunkSummaries, "\n- ")
+				atomic.AddInt64(&tel.totalPromptTokensHint, int64(scanner.EstimateTokens(aggregatedPrompt)))
+
+				aggregatedResult, err := aiClient.AnalyzeCodeWithContextDetailed(baseCtx, projectTree, md.Path, aggregatedPrompt)
+				atomic.AddInt64(&tel.totalAIAttempts, int64(aggregatedResult.Attempts))
+				if err != nil {
+					atomic.AddInt64(&tel.filesFailed, 1)
+					trackAIError(tel, err)
+					logger.Warn("ai summary synthesis failed", "path", md.Path, "error", err)
+					return
+				}
+
+				fileSummary = aggregatedResult.Summary
+			}
+
+			embedding, err := aiClient.EmbedText(baseCtx, fileSummary)
+			if err != nil {
+				atomic.AddInt64(&tel.embeddingsFailed, 1)
+				logger.Warn("embedding generation failed", "path", md.Path, "error", err)
+			} else {
+				atomic.AddInt64(&tel.embeddingsGenerated, 1)
 			}
 
 			indexMu.Lock()
@@ -221,13 +256,14 @@ func main() {
 				Path:      md.Path,
 				Hash:      md.Hash,
 				Language:  md.Language,
-				Summary:   result.Summary,
+				Summary:   fileSummary,
+				Embedding: embedding,
 				UpdatedAt: time.Now().UTC(),
 			}
 			indexMu.Unlock()
 			atomic.AddInt64(&tel.filesAnalyzed, 1)
 
-			logger.Info("ai analysis", "file", md.Path, "lang", md.Language, "summary", result.Summary)
+			logger.Info("ai analysis", "file", md.Path, "lang", md.Language, "chunks", len(chunks), "summary", fileSummary)
 		}()
 	}
 
@@ -251,6 +287,8 @@ func main() {
 		"files_analyzed", atomic.LoadInt64(&tel.filesAnalyzed),
 		"files_skipped_cache", atomic.LoadInt64(&tel.filesSkippedCache),
 		"files_failed", atomic.LoadInt64(&tel.filesFailed),
+		"embeddings_generated", atomic.LoadInt64(&tel.embeddingsGenerated),
+		"embeddings_failed", atomic.LoadInt64(&tel.embeddingsFailed),
 		"total_ai_attempts", atomic.LoadInt64(&tel.totalAIAttempts),
 		"auth_errors", atomic.LoadInt64(&tel.authErrors),
 		"transport_errors", atomic.LoadInt64(&tel.transportErrors),
@@ -371,4 +409,21 @@ func buildProjectTree(rootDir string, maxEntries int) (string, error) {
 	}
 
 	return strings.Join(lines, "\n"), nil
+}
+
+func trackAIError(tel *telemetry, err error) {
+	var authErr ai.AuthError
+	var transportErr ai.TransportError
+	var logicErr ai.APILogicError
+
+	switch {
+	case errors.As(err, &authErr):
+		atomic.AddInt64(&tel.authErrors, 1)
+	case errors.As(err, &transportErr):
+		atomic.AddInt64(&tel.transportErrors, 1)
+	case errors.As(err, &logicErr):
+		atomic.AddInt64(&tel.apiLogicErrors, 1)
+	default:
+		atomic.AddInt64(&tel.transportErrors, 1)
+	}
 }

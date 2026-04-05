@@ -17,6 +17,11 @@ const summaryPrompt = "Summarize this code in one short, professional sentence. 
 const projectContextPrompt = "You are analyzing code in the context of this project tree:\n%s"
 
 const (
+	EmbeddingProviderOpenAI = "openai"
+	EmbeddingProviderOllama = "ollama"
+)
+
+const (
 	maxRetryAttempts  = 4
 	initialRetryDelay = 500 * time.Millisecond
 )
@@ -57,10 +62,12 @@ func (e APILogicError) Error() string {
 }
 
 type Client struct {
-	baseURL    string
-	apiKey     string
-	model      string
-	httpClient *http.Client
+	baseURL           string
+	apiKey            string
+	model             string
+	embeddingModel    string
+	embeddingProvider string
+	httpClient        *http.Client
 }
 
 func NewClient(baseURL, apiKey, model string) (*Client, error) {
@@ -77,13 +84,30 @@ func NewClient(baseURL, apiKey, model string) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
+		baseURL:           strings.TrimRight(baseURL, "/"),
+		apiKey:            apiKey,
+		model:             model,
+		embeddingModel:    model,
+		embeddingProvider: EmbeddingProviderOpenAI,
 		httpClient: &http.Client{
 			Timeout: 2 * time.Minute,
 		},
 	}, nil
+}
+
+func (c *Client) ConfigureEmbeddings(provider, model string) {
+	provider = strings.TrimSpace(strings.ToLower(provider))
+	if provider == "" {
+		provider = EmbeddingProviderOpenAI
+	}
+
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = c.model
+	}
+
+	c.embeddingProvider = provider
+	c.embeddingModel = model
 }
 
 func (c *Client) Ping(ctx context.Context) error {
@@ -111,6 +135,36 @@ func (c *Client) AnalyzeCodeWithContext(ctx context.Context, projectTree, filePa
 
 func (c *Client) AnalyzeCodeWithContextDetailed(ctx context.Context, projectTree, filePath, code string) (AnalyzeResult, error) {
 	return c.analyzeCode(ctx, projectTree, filePath, code)
+}
+
+func (c *Client) EmbedText(ctx context.Context, input string) ([]float64, error) {
+	if strings.TrimSpace(input) == "" {
+		return nil, TransportError{Message: "embedding input is required"}
+	}
+
+	attempts := 0
+	delay := initialRetryDelay
+
+	for {
+		attempts++
+
+		embedding, err := c.sendEmbeddingRequest(ctx, input)
+		if err == nil {
+			return embedding, nil
+		}
+
+		var apiErr APILogicError
+		if !errors.As(err, &apiErr) || !shouldRetry(apiErr.StatusCode) || attempts >= maxRetryAttempts {
+			return nil, err
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, TransportError{Message: ctx.Err().Error()}
+		case <-time.After(delay):
+			delay *= 2
+		}
+	}
 }
 
 func (c *Client) analyzeCode(ctx context.Context, projectTree, filePath, code string) (AnalyzeResult, error) {
@@ -234,6 +288,108 @@ func (c *Client) sendChatRequest(ctx context.Context, body []byte) (chatCompleti
 	}
 
 	return completion, nil
+}
+
+type openAIEmbeddingRequest struct {
+	Model string `json:"model"`
+	Input string `json:"input"`
+}
+
+type openAIEmbeddingResponse struct {
+	Data []struct {
+		Embedding []float64 `json:"embedding"`
+	} `json:"data"`
+}
+
+type ollamaEmbeddingRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+}
+
+type ollamaEmbeddingResponse struct {
+	Embedding []float64 `json:"embedding"`
+}
+
+func (c *Client) sendEmbeddingRequest(ctx context.Context, input string) ([]float64, error) {
+	provider := strings.TrimSpace(strings.ToLower(c.embeddingProvider))
+	if provider == "" {
+		provider = EmbeddingProviderOpenAI
+	}
+
+	endpoint := c.baseURL + "/embeddings"
+	var body []byte
+	var err error
+
+	switch provider {
+	case EmbeddingProviderOpenAI:
+		body, err = json.Marshal(openAIEmbeddingRequest{Model: c.embeddingModel, Input: input})
+	case EmbeddingProviderOllama:
+		baseURL := c.baseURL
+		if strings.HasSuffix(baseURL, "/v1") {
+			baseURL = strings.TrimSuffix(baseURL, "/v1")
+		}
+		endpoint = baseURL + "/api/embeddings"
+		body, err = json.Marshal(ollamaEmbeddingRequest{Model: c.embeddingModel, Prompt: input})
+	default:
+		return nil, TransportError{Message: "unsupported embedding provider: " + provider}
+	}
+	if err != nil {
+		return nil, TransportError{Message: err.Error()}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, TransportError{Message: err.Error()}
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if provider == EmbeddingProviderOpenAI {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, TransportError{Message: err.Error()}
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, TransportError{Message: err.Error()}
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(responseBody))
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, AuthError{StatusCode: resp.StatusCode, Message: message}
+		}
+
+		return nil, APILogicError{StatusCode: resp.StatusCode, Message: message}
+	}
+
+	if provider == EmbeddingProviderOpenAI {
+		var openAIResp openAIEmbeddingResponse
+		if err := json.Unmarshal(responseBody, &openAIResp); err != nil {
+			return nil, APILogicError{Message: err.Error()}
+		}
+
+		if len(openAIResp.Data) == 0 || len(openAIResp.Data[0].Embedding) == 0 {
+			return nil, APILogicError{Message: "embedding response is empty"}
+		}
+
+		return openAIResp.Data[0].Embedding, nil
+	}
+
+	var ollamaResp ollamaEmbeddingResponse
+	if err := json.Unmarshal(responseBody, &ollamaResp); err != nil {
+		return nil, APILogicError{Message: err.Error()}
+	}
+
+	if len(ollamaResp.Embedding) == 0 {
+		return nil, APILogicError{Message: "embedding response is empty"}
+	}
+
+	return ollamaResp.Embedding, nil
 }
 
 func extractSummary(completion chatCompletionResponse) (string, error) {
