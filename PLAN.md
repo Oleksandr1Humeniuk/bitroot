@@ -41,7 +41,7 @@ Phase 2: Context & Semantic Intelligence [IN PROGRESS]
 
 [x] CLI "ask" Command: New sub-command for natural language queries.
 
-[ ] Context Injection: RAG logic to feed top-K relevant chunks into the prompt.
+[x] Context Injection: RAG logic to feed top-K relevant chunks into the prompt.
 
 [ ] Source Citations: AI responses with file paths and line references.
 
@@ -62,4 +62,4 @@ AI: internal/ai (Handling chat & embeddings)
 Storage: internal/storage (Managing JSON vector database)
 
 Next Atomic Step
-Implement Task 2.3.3: Add context injection to build RAG prompts from top-K semantic results.
+Implement Task 2.3.4: Add source citations to semantic answers with file path references.

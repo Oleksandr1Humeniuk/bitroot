@@ -463,6 +463,12 @@ func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, i
 		return nil
 	}
 
+	semanticContext := buildRAGContext(results)
+	answer, err := aiClient.AnswerQuestionWithContext(ctx, query, semanticContext)
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("Query: %s\n", query)
 	fmt.Printf("Top %d semantic matches:\n", len(results))
 	for i, result := range results {
@@ -471,8 +477,29 @@ func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, i
 			fmt.Printf("   %s\n", result.Summary)
 		}
 	}
+	fmt.Printf("\nAnswer:\n%s\n", answer)
 
 	return nil
+}
+
+func buildRAGContext(results []storage.SearchResult) string {
+	if len(results) == 0 {
+		return "(no semantic context)"
+	}
+
+	var b strings.Builder
+	for i, result := range results {
+		b.WriteString(fmt.Sprintf("[%d] Path: %s\n", i+1, result.Path))
+		b.WriteString(fmt.Sprintf("Score: %.4f\n", result.Score))
+		if strings.TrimSpace(result.Summary) != "" {
+			b.WriteString("Summary: ")
+			b.WriteString(strings.TrimSpace(result.Summary))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	return strings.TrimSpace(b.String())
 }
 
 func loadProjectIndex(logger *slog.Logger, indexRoot string) (*storage.ProjectIndex, string) {

@@ -15,6 +15,7 @@ import (
 
 const summaryPrompt = "Summarize this code in one short, professional sentence. Return strict JSON with keys: summary (string), bugs (array), suggestions (array)."
 const projectContextPrompt = "You are analyzing code in the context of this project tree:\n%s"
+const qaWithContextSystemPrompt = "You are an expert software engineering assistant. Answer the question using only the provided semantic context. If context is insufficient, say so clearly."
 
 const (
 	EmbeddingProviderOpenAI = "openai"
@@ -161,6 +162,58 @@ func (c *Client) EmbedText(ctx context.Context, input string) ([]float64, error)
 		select {
 		case <-ctx.Done():
 			return nil, TransportError{Message: ctx.Err().Error()}
+		case <-time.After(delay):
+			delay *= 2
+		}
+	}
+}
+
+func (c *Client) AnswerQuestionWithContext(ctx context.Context, question, semanticContext string) (string, error) {
+	if strings.TrimSpace(question) == "" {
+		return "", TransportError{Message: "question is required"}
+	}
+
+	if strings.TrimSpace(semanticContext) == "" {
+		return "", TransportError{Message: "semantic context is required"}
+	}
+
+	requestBody := chatCompletionRequest{
+		Model: c.model,
+		Messages: []chatMessage{
+			{Role: "system", Content: qaWithContextSystemPrompt},
+			{Role: "user", Content: "Question:\n" + question + "\n\nSemantic context:\n" + semanticContext},
+		},
+	}
+
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", TransportError{Message: err.Error()}
+	}
+
+	attempts := 0
+	delay := initialRetryDelay
+
+	for {
+		attempts++
+
+		completion, err := c.sendChatRequest(ctx, body)
+		if err == nil {
+			answer, answerErr := extractFirstMessage(completion)
+			if answerErr != nil {
+				return "", answerErr
+			}
+
+			return answer, nil
+		}
+
+		var apiErr APILogicError
+		if !errors.As(err, &apiErr) || !shouldRetry(apiErr.StatusCode) || attempts >= maxRetryAttempts {
+			return "", err
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", TransportError{Message: ctx.Err().Error()}
 		case <-time.After(delay):
 			delay *= 2
 		}
@@ -426,6 +479,19 @@ func extractSummary(completion chatCompletionResponse) (string, error) {
 	}
 
 	return strings.TrimSpace(summary), nil
+}
+
+func extractFirstMessage(completion chatCompletionResponse) (string, error) {
+	if len(completion.Choices) == 0 {
+		return "", APILogicError{Message: "empty choices in response"}
+	}
+
+	content := strings.TrimSpace(completion.Choices[0].Message.Content)
+	if content == "" {
+		return "", APILogicError{Message: "empty content in response"}
+	}
+
+	return content, nil
 }
 
 func validateRequiredFields(payload map[string]any, required []string) error {

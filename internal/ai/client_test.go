@@ -369,3 +369,88 @@ func TestEmbedText(t *testing.T) {
 		})
 	}
 }
+
+func TestAnswerQuestionWithContext(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		status    int
+		response  string
+		question  string
+		context   string
+		wantErr   bool
+		wantText  string
+		wantCalls int32
+	}{
+		{
+			name:      "success",
+			status:    http.StatusOK,
+			response:  `{"choices":[{"message":{"content":"Use scanner chunking from internal/scanner/chunker.go."}}]}`,
+			question:  "How is chunking implemented?",
+			context:   "Path: internal/scanner/chunker.go\nSummary: Chunking logic",
+			wantText:  "Use scanner chunking from internal/scanner/chunker.go.",
+			wantCalls: 1,
+		},
+		{
+			name:      "retries on rate limit",
+			status:    http.StatusTooManyRequests,
+			response:  `{"error":"rate limit"}`,
+			question:  "Q",
+			context:   "C",
+			wantErr:   true,
+			wantCalls: 4,
+		},
+		{
+			name:     "validation empty question",
+			status:   http.StatusOK,
+			response: `{"choices":[{"message":{"content":"ok"}}]}`,
+			context:  "C",
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			defer server.Close()
+
+			client, err := NewClient(server.URL+"/v1", "test-key", "test-model")
+			if err != nil {
+				t.Fatalf("new client failed: %v", err)
+			}
+
+			answer, err := client.AnswerQuestionWithContext(context.Background(), tt.question, tt.context)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.wantCalls == 0 && calls.Load() != 0 {
+					t.Fatalf("expected no requests, got %d", calls.Load())
+				}
+				if tt.wantCalls > 0 && calls.Load() != tt.wantCalls {
+					t.Fatalf("unexpected request count: got %d want %d", calls.Load(), tt.wantCalls)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if answer != tt.wantText {
+				t.Fatalf("answer mismatch: got %q want %q", answer, tt.wantText)
+			}
+			if calls.Load() != tt.wantCalls {
+				t.Fatalf("unexpected request count: got %d want %d", calls.Load(), tt.wantCalls)
+			}
+		})
+	}
+}
