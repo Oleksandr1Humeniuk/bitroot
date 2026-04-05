@@ -94,6 +94,7 @@ func TestScannerScanSuccess(t *testing.T) {
 			var gotPaths []string
 			gotSizes := make(map[string]int64, len(tt.files))
 			gotLanguages := make(map[string]string, len(tt.files))
+			gotHashes := make(map[string]string, len(tt.files))
 			for result := range results {
 				if result.Error != nil {
 					t.Fatalf("unexpected file scan error for %s: %v", result.Path, result.Error)
@@ -102,6 +103,7 @@ func TestScannerScanSuccess(t *testing.T) {
 				gotPaths = append(gotPaths, result.Path)
 				gotSizes[result.Path] = result.Size
 				gotLanguages[result.Path] = result.Language
+				gotHashes[result.Path] = result.Hash
 			}
 
 			wantPaths := make([]string, 0, len(tt.wantLanguages))
@@ -136,6 +138,10 @@ func TestScannerScanSuccess(t *testing.T) {
 				path := filepath.Join(rootDir, relPath)
 				if gotLanguages[path] != language {
 					t.Fatalf("language mismatch for %s: got %q want %q", path, gotLanguages[path], language)
+				}
+
+				if gotHashes[path] == "" {
+					t.Fatalf("hash should not be empty for %s", path)
 				}
 			}
 		})
@@ -216,6 +222,9 @@ func TestScannerScanSingleAllowedFile(t *testing.T) {
 		}
 		if result.Language != "go" {
 			t.Fatalf("expected language go, got %s", result.Language)
+		}
+		if result.Hash == "" {
+			t.Fatal("expected non-empty hash")
 		}
 	}
 

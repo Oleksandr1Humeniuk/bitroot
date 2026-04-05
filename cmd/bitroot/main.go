@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -15,9 +14,11 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"bitroot/internal/ai"
 	"bitroot/internal/scanner"
+	"bitroot/internal/storage"
 
 	"github.com/joho/godotenv"
 )
@@ -57,6 +58,32 @@ func main() {
 		logger.Info("processing single file input", "path", rootDir)
 	}
 
+	indexRoot := rootDir
+	if !rootInfo.IsDir() {
+		indexRoot = filepath.Dir(rootDir)
+	}
+
+	indexPath := filepath.Join(indexRoot, ".bitroot_index.json")
+	projectIndex := &storage.ProjectIndex{}
+	if err := projectIndex.Load(indexPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			projectIndex = &storage.ProjectIndex{
+				ProjectRoot: indexRoot,
+				Files:       make(map[string]storage.FileEntry),
+			}
+		} else {
+			logger.Warn("failed to load index, starting fresh", "path", indexPath, "error", err)
+			projectIndex = &storage.ProjectIndex{
+				ProjectRoot: indexRoot,
+				Files:       make(map[string]storage.FileEntry),
+			}
+		}
+	}
+	if projectIndex.Files == nil {
+		projectIndex.Files = make(map[string]storage.FileEntry)
+	}
+	projectIndex.ProjectRoot = indexRoot
+
 	workerCount := 4
 	logger.Info("starting scanner", "path", rootDir, "workers", workerCount)
 
@@ -73,6 +100,7 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
+	var indexMu sync.Mutex
 	sem := make(chan struct{}, 2)
 
 	for metadata := range results {
@@ -83,6 +111,15 @@ func main() {
 
 		if metadata.Language == "" {
 			logger.Debug("skipping non-text file", "path", metadata.Path)
+			continue
+		}
+
+		indexMu.Lock()
+		cached, ok := projectIndex.Files[metadata.Path]
+		unchanged := ok && cached.Hash == metadata.Hash
+		indexMu.Unlock()
+		if unchanged {
+			logger.Info("skipping unchanged file", "path", metadata.Path)
 			continue
 		}
 
@@ -114,11 +151,26 @@ func main() {
 				return
 			}
 
+			indexMu.Lock()
+			projectIndex.Files[md.Path] = storage.FileEntry{
+				Path:      md.Path,
+				Hash:      md.Hash,
+				Language:  md.Language,
+				Summary:   summary,
+				UpdatedAt: time.Now().UTC(),
+			}
+			indexMu.Unlock()
+
 			logger.Info("ai analysis", "file", md.Path, "lang", md.Language, "summary", summary)
 		}()
 	}
 
 	wg.Wait()
+	if err := projectIndex.Save(indexPath); err != nil {
+		logger.Warn("failed to save index", "path", indexPath, "error", err)
+	} else {
+		logger.Info("index saved", "path", indexPath)
+	}
 	logger.Info("scan completed")
 }
 
@@ -158,7 +210,7 @@ func readFilePrefix(ctx context.Context, path string, maxBytes int64) ([]byte, e
 		n, readErr := file.Read(chunk[:toRead])
 		if n > 0 {
 			if _, writeErr := out.Write(chunk[:n]); writeErr != nil {
-				return nil, fmt.Errorf("buffer write failed: %w", writeErr)
+				return nil, writeErr
 			}
 			remaining -= int64(n)
 		}

@@ -1,6 +1,6 @@
 # BitRoot: Operational Plan
 
-**Current Phase**: Phase 2 — Context & Metadata
+**Current Phase**: Phase 3 — Knowledge Base & Cache
 **Status**: [ACTIVE]
 
 ---
@@ -13,11 +13,19 @@
 
 ---
 
-## Todo: Phase 2 — Context & Metadata
+## Phase 2 — Context & Metadata [COMPLETED]
 
 - [x] 2.1 Implement file type filtering (ignore `node_modules`, `.git`, binary files).
 - [x] 2.2 Add Language Detection to metadata (Go, TS, JS, etc.).
 - [x] 2.3 Implement project-level context (system prompt with project tree).
+
+---
+
+## Phase 3 — Knowledge Base & Cache
+
+- [x] 3.1 Implement SHA-256 hashing for file contents in `internal/scanner`.
+- [x] 3.2 Create `internal/storage` for index persistence (JSON-based).
+- [x] 3.3 Add logic in `main.go` to skip AI processing if file hash matches stored index.
 
 ---
 
@@ -44,7 +52,8 @@
 - Entrypoint: `cmd/bitroot/main.go`
 - Scanner package: `internal/scanner`
 - AI package: `internal/ai`
+- Storage package: `internal/storage`
 
 ## Next Atomic Step
 
-Phase 2 tasks complete. Define Phase 3 scope.
+Phase 3 baseline complete. Define next cache refinement tasks.

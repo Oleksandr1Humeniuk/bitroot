@@ -77,12 +77,12 @@ func (c *Client) analyzeCode(ctx context.Context, projectTree, filePath, code st
 
 	body, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return "", err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return "", err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
@@ -90,13 +90,13 @@ func (c *Client) analyzeCode(ctx context.Context, projectTree, filePath, code st
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("send request: %w", err)
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return "", err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -105,7 +105,7 @@ func (c *Client) analyzeCode(ctx context.Context, projectTree, filePath, code st
 
 	var completion chatCompletionResponse
 	if err := json.Unmarshal(responseBody, &completion); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+		return "", err
 	}
 
 	if len(completion.Choices) == 0 {

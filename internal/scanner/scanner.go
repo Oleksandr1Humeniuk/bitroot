@@ -2,8 +2,10 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
-	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -18,6 +20,7 @@ type FileMetadata struct {
 	FileName string
 	Size     int64
 	Language string
+	Hash     string
 	Error    error
 }
 
@@ -80,7 +83,7 @@ func (s *Scanner) Scan(ctx context.Context, rootDir string) (<-chan FileMetadata
 
 	rootInfo, err := os.Stat(rootDir)
 	if err != nil {
-		return nil, fmt.Errorf("stat root directory %q: %w", rootDir, err)
+		return nil, err
 	}
 
 	results := make(chan FileMetadata, 100)
@@ -169,12 +172,13 @@ func (s *Scanner) worker(ctx context.Context, jobs <-chan string, results chan<-
 				Language: detectLanguage(path),
 			}
 
-			info, err := os.Stat(path)
+			hash, size, err := hashFile(path)
 			if err != nil {
-				metadata.Error = fmt.Errorf("stat file %q: %w", path, err)
-				s.Logger.Warn("file stat failed", "path", path, "error", err)
+				metadata.Error = err
+				s.Logger.Warn("file hash failed", "path", path, "error", err)
 			} else {
-				metadata.Size = info.Size()
+				metadata.Size = size
+				metadata.Hash = hash
 				s.Logger.Info("found file", "path", path, "size", metadata.Size)
 			}
 
@@ -209,4 +213,24 @@ func shouldProcessFile(path string) bool {
 	}
 
 	return detectLanguage(path) != ""
+}
+
+func hashFile(path string) (string, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", 0, err
+	}
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", 0, err
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), info.Size(), nil
 }
