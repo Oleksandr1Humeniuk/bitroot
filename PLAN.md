@@ -1,6 +1,6 @@
 # BitRoot: Operational Plan
 
-**Current Phase**: Phase 3 — Knowledge Base & Cache
+**Current Phase**: Phase 2.1 — RAG & Semantic Context
 **Status**: [ACTIVE]
 
 ---
@@ -13,6 +13,20 @@
 
 ---
 
+## Phase 1.1 — Reliability & Observability [COMPLETED]
+
+- [x] 1.1.1 Resilient AI Client: Implement middleware for internal/ai with support for:
+      Exponential Backoff: Automatic retries for 429 (Rate Limit) and 5xx (Server) errors.
+      Hard Timeout: Prevent the CLI from hanging indefinitely on a single file.
+
+- [x] 1.1.2 Token & Cost Tracking: Implement a response interceptor in internal/ai to extract and log prompt_tokens and completion_tokens.
+
+- [x] 1.1.3 Structured Output Enforcement: Transition the system prompt to JSON Mode to ensure internal/scanner receives schema-validated data instead of raw text.
+
+- [x] 1.1.4 Telemetry & Reporting: Display a summary dashboard after scanning (Execution time, total tokens used, and files skipped via cache).
+
+---
+
 ## Phase 2 — Context & Metadata [COMPLETED]
 
 - [x] 2.1 Implement file type filtering (ignore `node_modules`, `.git`, binary files).
@@ -21,11 +35,21 @@
 
 ---
 
-## Phase 3 — Knowledge Base & Cache
+## Phase 2.4 — Knowledge Base & Cache [COMPLETED]
 
 - [x] 3.1 Implement SHA-256 hashing for file contents in `internal/scanner`.
 - [x] 3.2 Create `internal/storage` for index persistence (JSON-based).
 - [x] 3.3 Add logic in `main.go` to skip AI processing if file hash matches stored index.
+
+---
+
+## Phase 2.1 — RAG & Semantic Context (Next)
+
+- [ ] 2.1.1 Chunking Strategy: Develop logic to split large source files into logical blocks (functions, classes, or blocks) to fit model context limits.
+
+- [ ] 2.1.2 Embeddings Integration: Integrate embedding models (via Ollama or OpenAI) to represent code semantically.
+
+- [ ] 2.1.3 Vector Store Implementation: Replace storage/index.json with a local vector database or an embedded semantic search engine (e.g., ChromaDB or a native Go implementation).
 
 ---
 
@@ -56,4 +80,4 @@
 
 ## Next Atomic Step
 
-Phase 3 baseline complete. Define next cache refinement tasks.
+Implement task #2.1.1: chunking strategy for large source files.

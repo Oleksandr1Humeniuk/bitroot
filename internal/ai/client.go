@@ -7,13 +7,54 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 )
 
-const summaryPrompt = "Summarize this code in one short, professional sentence."
+const summaryPrompt = "Summarize this code in one short, professional sentence. Return strict JSON with keys: summary (string), bugs (array), suggestions (array)."
 const projectContextPrompt = "You are analyzing code in the context of this project tree:\n%s"
+
+const (
+	maxRetryAttempts  = 4
+	initialRetryDelay = 500 * time.Millisecond
+)
+
+type AnalyzeResult struct {
+	Summary  string
+	Attempts int
+}
+
+type AuthError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e AuthError) Error() string {
+	return fmt.Sprintf("auth error (%d): %s", e.StatusCode, e.Message)
+}
+
+type TransportError struct {
+	Message string
+}
+
+func (e TransportError) Error() string {
+	return e.Message
+}
+
+type APILogicError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e APILogicError) Error() string {
+	if e.StatusCode == 0 {
+		return e.Message
+	}
+
+	return fmt.Sprintf("api error (%d): %s", e.StatusCode, e.Message)
+}
 
 type Client struct {
 	baseURL    string
@@ -45,15 +86,34 @@ func NewClient(baseURL, apiKey, model string) (*Client, error) {
 	}, nil
 }
 
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.AnalyzeCodeWithContextDetailed(ctx, "", "ping.go", "package main\n\nfunc main() {}")
+	return err
+}
+
 func (c *Client) AnalyzeCode(ctx context.Context, code string) (string, error) {
-	return c.analyzeCode(ctx, "", "", code)
+	result, err := c.analyzeCode(ctx, "", "", code)
+	if err != nil {
+		return "", err
+	}
+
+	return result.Summary, nil
 }
 
 func (c *Client) AnalyzeCodeWithContext(ctx context.Context, projectTree, filePath, code string) (string, error) {
+	result, err := c.analyzeCode(ctx, projectTree, filePath, code)
+	if err != nil {
+		return "", err
+	}
+
+	return result.Summary, nil
+}
+
+func (c *Client) AnalyzeCodeWithContextDetailed(ctx context.Context, projectTree, filePath, code string) (AnalyzeResult, error) {
 	return c.analyzeCode(ctx, projectTree, filePath, code)
 }
 
-func (c *Client) analyzeCode(ctx context.Context, projectTree, filePath, code string) (string, error) {
+func (c *Client) analyzeCode(ctx context.Context, projectTree, filePath, code string) (AnalyzeResult, error) {
 	messages := make([]chatMessage, 0, 2)
 	if strings.TrimSpace(projectTree) != "" {
 		messages = append(messages, chatMessage{
@@ -71,58 +131,50 @@ func (c *Client) analyzeCode(ctx context.Context, projectTree, filePath, code st
 	messages = append(messages, chatMessage{Role: "user", Content: userContent})
 
 	requestBody := chatCompletionRequest{
-		Model:    c.model,
-		Messages: messages,
+		Model:          c.model,
+		Messages:       messages,
+		ResponseFormat: summaryResponseFormat(),
 	}
 
 	body, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", err
+		return AnalyzeResult{Attempts: 1}, TransportError{Message: err.Error()}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", err
+	attempts := 0
+	delay := initialRetryDelay
+
+	for {
+		attempts++
+
+		completion, err := c.sendChatRequest(ctx, body)
+		if err == nil {
+			summary, summaryErr := extractSummary(completion)
+			if summaryErr != nil {
+				return AnalyzeResult{Attempts: attempts}, summaryErr
+			}
+
+			return AnalyzeResult{Summary: summary, Attempts: attempts}, nil
+		}
+
+		var apiErr APILogicError
+		if !errors.As(err, &apiErr) || !shouldRetry(apiErr.StatusCode) || attempts >= maxRetryAttempts {
+			return AnalyzeResult{Attempts: attempts}, err
+		}
+
+		select {
+		case <-ctx.Done():
+			return AnalyzeResult{Attempts: attempts}, TransportError{Message: ctx.Err().Error()}
+		case <-time.After(delay):
+			delay *= 2
+		}
 	}
-
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
-	}
-
-	var completion chatCompletionResponse
-	if err := json.Unmarshal(responseBody, &completion); err != nil {
-		return "", err
-	}
-
-	if len(completion.Choices) == 0 {
-		return "", errors.New("empty choices in response")
-	}
-
-	summary := strings.TrimSpace(completion.Choices[0].Message.Content)
-	if summary == "" {
-		return "", errors.New("empty summary in response")
-	}
-
-	return summary, nil
 }
 
 type chatCompletionRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
+	Model          string          `json:"model"`
+	Messages       []chatMessage   `json:"messages"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
 
 type chatMessage struct {
@@ -134,4 +186,132 @@ type chatCompletionResponse struct {
 	Choices []struct {
 		Message chatMessage `json:"message"`
 	} `json:"choices"`
+}
+
+type responseFormat struct {
+	Type       string          `json:"type"`
+	JSONSchema jsonSchemaBlock `json:"json_schema"`
+}
+
+type jsonSchemaBlock struct {
+	Name   string         `json:"name"`
+	Strict bool           `json:"strict"`
+	Schema map[string]any `json:"schema"`
+}
+
+func (c *Client) sendChatRequest(ctx context.Context, body []byte) (chatCompletionResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return chatCompletionResponse{}, TransportError{Message: err.Error()}
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return chatCompletionResponse{}, TransportError{Message: err.Error()}
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return chatCompletionResponse{}, TransportError{Message: err.Error()}
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(responseBody))
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return chatCompletionResponse{}, AuthError{StatusCode: resp.StatusCode, Message: message}
+		}
+
+		return chatCompletionResponse{}, APILogicError{StatusCode: resp.StatusCode, Message: message}
+	}
+
+	var completion chatCompletionResponse
+	if err := json.Unmarshal(responseBody, &completion); err != nil {
+		return chatCompletionResponse{}, APILogicError{Message: err.Error()}
+	}
+
+	return completion, nil
+}
+
+func extractSummary(completion chatCompletionResponse) (string, error) {
+	if len(completion.Choices) == 0 {
+		err := APILogicError{Message: "empty choices in response"}
+		slog.Error("ai response validation failed", "error", err)
+		return "", err
+	}
+
+	content := strings.TrimSpace(completion.Choices[0].Message.Content)
+	if content == "" {
+		err := APILogicError{Message: "empty content in response"}
+		slog.Error("ai response validation failed", "error", err)
+		return "", err
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		logicErr := APILogicError{Message: "response content is not valid JSON"}
+		slog.Error("ai response validation failed", "error", logicErr)
+		return "", logicErr
+	}
+
+	if err := validateRequiredFields(payload, []string{"summary", "bugs", "suggestions"}); err != nil {
+		slog.Error("ai response validation failed", "error", err)
+		return "", err
+	}
+
+	summary, ok := payload["summary"].(string)
+	if !ok || strings.TrimSpace(summary) == "" {
+		err := APILogicError{Message: "summary must be a non-empty string"}
+		slog.Error("ai response validation failed", "error", err)
+		return "", err
+	}
+
+	return strings.TrimSpace(summary), nil
+}
+
+func validateRequiredFields(payload map[string]any, required []string) error {
+	for _, field := range required {
+		if _, ok := payload[field]; !ok {
+			return APILogicError{Message: "missing required field: " + field}
+		}
+	}
+
+	return nil
+}
+
+func summaryResponseFormat() *responseFormat {
+	return &responseFormat{
+		Type: "json_schema",
+		JSONSchema: jsonSchemaBlock{
+			Name:   "summary_response",
+			Strict: true,
+			Schema: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"summary": map[string]any{"type": "string"},
+					"bugs": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "string"},
+					},
+					"suggestions": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "string"},
+					},
+				},
+				"required": []string{"summary", "bugs", "suggestions"},
+			},
+		},
+	}
+}
+
+func shouldRetry(statusCode int) bool {
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
+
+	return statusCode >= 500 && statusCode <= 599
 }

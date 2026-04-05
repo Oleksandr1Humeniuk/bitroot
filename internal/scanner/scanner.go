@@ -192,6 +192,10 @@ func (s *Scanner) worker(ctx context.Context, jobs <-chan string, results chan<-
 }
 
 func shouldIgnoreDirectory(name string) bool {
+	return IsIgnoredDirectory(name)
+}
+
+func IsIgnoredDirectory(name string) bool {
 	_, ok := ignoredDirectories[strings.ToLower(name)]
 	return ok
 }
@@ -233,4 +237,17 @@ func hashFile(path string) (string, int64, error) {
 	}
 
 	return hex.EncodeToString(hasher.Sum(nil)), info.Size(), nil
+}
+
+func EstimateTokens(content string) int {
+	if content == "" {
+		return 0
+	}
+
+	estimate := len(content) / 4
+	if estimate < 1 {
+		return 1
+	}
+
+	return estimate
 }

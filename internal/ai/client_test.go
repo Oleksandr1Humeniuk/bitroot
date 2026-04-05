@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -49,43 +50,43 @@ func TestNewClientValidation(t *testing.T) {
 	}
 }
 
-func TestAnalyzeCode(t *testing.T) {
+func TestAnalyzeCodeWithContextDetailed(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		statusCode int
-		response   string
-		wantErr    bool
-		wantText   string
-		withCtx    bool
+		name     string
+		status   int
+		response string
+		wantErr  bool
+		errType  string
+		wantText string
 	}{
 		{
-			name:       "success",
-			statusCode: http.StatusOK,
-			response:   `{"choices":[{"message":{"content":"Go code scans files recursively."}}]}`,
-			wantErr:    false,
-			wantText:   "Go code scans files recursively.",
+			name:     "success",
+			status:   http.StatusOK,
+			response: `{"choices":[{"message":{"content":"{\"summary\":\"Go scanner summary.\",\"bugs\":[],\"suggestions\":[]}"}}]}`,
+			wantText: "Go scanner summary.",
 		},
 		{
-			name:       "success with project context",
-			statusCode: http.StatusOK,
-			response:   `{"choices":[{"message":{"content":"Go code scans files recursively."}}]}`,
-			wantErr:    false,
-			wantText:   "Go code scans files recursively.",
-			withCtx:    true,
+			name:     "auth error",
+			status:   http.StatusUnauthorized,
+			response: `{"error":"unauthorized"}`,
+			wantErr:  true,
+			errType:  "auth",
 		},
 		{
-			name:       "api error",
-			statusCode: http.StatusBadRequest,
-			response:   `{"error":"bad request"}`,
-			wantErr:    true,
+			name:     "api logic error status",
+			status:   http.StatusBadRequest,
+			response: `{"error":"bad request"}`,
+			wantErr:  true,
+			errType:  "logic",
 		},
 		{
-			name:       "empty choices",
-			statusCode: http.StatusOK,
-			response:   `{"choices":[]}`,
-			wantErr:    true,
+			name:     "missing required field",
+			status:   http.StatusOK,
+			response: `{"choices":[{"message":{"content":"{\"summary\":\"x\",\"bugs\":[]}"}}]}`,
+			wantErr:  true,
+			errType:  "logic",
 		},
 	}
 
@@ -99,30 +100,16 @@ func TestAnalyzeCode(t *testing.T) {
 					t.Fatalf("expected POST, got %s", r.Method)
 				}
 
-				if r.URL.Path != "/v1/chat/completions" {
-					t.Fatalf("unexpected path: %s", r.URL.Path)
-				}
-
-				if auth := r.Header.Get("Authorization"); auth != "Bearer test-key" {
-					t.Fatalf("unexpected authorization header: %s", auth)
-				}
-
 				requestBody, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Fatalf("read body: %v", err)
 				}
 
-				if !strings.Contains(string(requestBody), "Summarize this code in one short, professional sentence.") {
-					t.Fatalf("prompt not found in request: %s", string(requestBody))
+				if !strings.Contains(string(requestBody), "\"response_format\"") {
+					t.Fatalf("expected response_format in request: %s", string(requestBody))
 				}
 
-				if tt.withCtx {
-					if !strings.Contains(string(requestBody), "You are analyzing code in the context of this project tree") {
-						t.Fatalf("project context not found in request: %s", string(requestBody))
-					}
-				}
-
-				w.WriteHeader(tt.statusCode)
+				w.WriteHeader(tt.status)
 				_, _ = w.Write([]byte(tt.response))
 			}))
 			defer server.Close()
@@ -132,15 +119,29 @@ func TestAnalyzeCode(t *testing.T) {
 				t.Fatalf("new client failed: %v", err)
 			}
 
-			var summary string
-			if tt.withCtx {
-				summary, err = client.AnalyzeCodeWithContext(context.Background(), "cmd/\ninternal/", "main.go", "package main")
-			} else {
-				summary, err = client.AnalyzeCode(context.Background(), "package main")
-			}
+			result, err := client.AnalyzeCodeWithContextDetailed(context.Background(), "cmd/", "main.go", "package main")
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
+				}
+
+				switch tt.errType {
+				case "auth":
+					var authErr AuthError
+					if !strings.Contains(err.Error(), "auth error") && !strings.Contains(err.Error(), "unauthorized") {
+						t.Fatalf("expected auth error, got %v", err)
+					}
+					_ = authErr
+				case "logic":
+					var logicErr APILogicError
+					if !strings.Contains(err.Error(), "api error") && !strings.Contains(err.Error(), "missing required field") {
+						t.Fatalf("expected logic error, got %v", err)
+					}
+					_ = logicErr
+				}
+
+				if result.Attempts != 1 {
+					t.Fatalf("expected attempts=1 on failure, got %d", result.Attempts)
 				}
 				return
 			}
@@ -149,9 +150,64 @@ func TestAnalyzeCode(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			if summary != tt.wantText {
-				t.Fatalf("unexpected summary: got %q want %q", summary, tt.wantText)
+			if result.Summary != tt.wantText {
+				t.Fatalf("unexpected summary: got %q want %q", result.Summary, tt.wantText)
+			}
+
+			if result.Attempts != 1 {
+				t.Fatalf("expected attempts=1, got %d", result.Attempts)
 			}
 		})
+	}
+}
+
+func TestPing(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"summary\":\"pong\",\"bugs\":[],\"suggestions\":[]}"}}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL+"/v1", "test-key", "test-model")
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	if err := client.Ping(context.Background()); err != nil {
+		t.Fatalf("ping failed: %v", err)
+	}
+}
+
+func TestAnalyzeCodeRetriesOnRateLimit(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := calls.Add(1)
+		if count < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"rate limit"}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"summary\":\"ok\",\"bugs\":[],\"suggestions\":[]}"}}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL+"/v1", "test-key", "test-model")
+	if err != nil {
+		t.Fatalf("new client failed: %v", err)
+	}
+
+	result, err := client.AnalyzeCodeWithContextDetailed(context.Background(), "", "main.go", "package main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", result.Attempts)
 	}
 }

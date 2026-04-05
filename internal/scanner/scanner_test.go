@@ -233,6 +233,28 @@ func TestScannerScanSingleAllowedFile(t *testing.T) {
 	}
 }
 
+func TestEstimateTokens(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    int
+	}{
+		{name: "empty", content: "", want: 0},
+		{name: "small", content: "abcd", want: 1},
+		{name: "eight chars", content: "abcdefgh", want: 2},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanner.EstimateTokens(tt.content)
+			if got != tt.want {
+				t.Fatalf("got %d want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestScannerScanRespectsCancelledContext(t *testing.T) {
 	t.Parallel()
 
