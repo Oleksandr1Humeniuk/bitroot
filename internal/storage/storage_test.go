@@ -30,6 +30,10 @@ func TestProjectIndexSaveLoad(t *testing.T) {
 						Hash:      "abc123",
 						Language:  "go",
 						Summary:   "Main entrypoint",
+						Package:   "main",
+						Imports:   []string{"context", "fmt"},
+						Header:    "// main entrypoint file",
+						Chunks:    []Chunk{{Ref: "main.go:1-20", Content: "func main() { run() }"}},
 						Refs:      []string{"main.go:1-20"},
 						Embedding: []float64{0.25, 0.5, 0.75},
 						UpdatedAt: time.Now().UTC().Truncate(time.Second),
@@ -110,6 +114,26 @@ func TestProjectIndexSaveLoad(t *testing.T) {
 
 				if got.Path != expected.Path || got.Hash != expected.Hash || got.Language != expected.Language || got.Summary != expected.Summary {
 					t.Fatalf("entry mismatch for %q", key)
+				}
+
+				if got.Package != expected.Package || got.Header != expected.Header {
+					t.Fatalf("metadata mismatch for %q", key)
+				}
+				if len(got.Imports) != len(expected.Imports) {
+					t.Fatalf("imports length mismatch for %q: got %d want %d", key, len(got.Imports), len(expected.Imports))
+				}
+				for i := range expected.Imports {
+					if got.Imports[i] != expected.Imports[i] {
+						t.Fatalf("import mismatch for %q at index %d: got %q want %q", key, i, got.Imports[i], expected.Imports[i])
+					}
+				}
+				if len(got.Chunks) != len(expected.Chunks) {
+					t.Fatalf("chunks length mismatch for %q: got %d want %d", key, len(got.Chunks), len(expected.Chunks))
+				}
+				for i := range expected.Chunks {
+					if got.Chunks[i].Ref != expected.Chunks[i].Ref || got.Chunks[i].Content != expected.Chunks[i].Content {
+						t.Fatalf("chunk mismatch for %q at index %d", key, i)
+					}
 				}
 
 				if len(got.Embedding) != len(expected.Embedding) {
@@ -398,5 +422,124 @@ func TestProjectIndexSearch(t *testing.T) {
 	}
 	if results[0].Path != "a.go" {
 		t.Fatalf("unexpected top result: got %q want %q", results[0].Path, "a.go")
+	}
+}
+
+func TestProjectIndexHybridSearch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		query          string
+		queryEmbedding []float64
+		entries        []FileEntry
+		limit          int
+		wantErr        bool
+		wantTopPath    string
+	}{
+		{
+			name:           "exact symbol boosts keyword hit",
+			query:          "SearchHybrid",
+			queryEmbedding: []float64{1, 0},
+			entries: []FileEntry{
+				{Path: "internal/ai/client.go", Summary: "GenerateAnswer handles qa output", Package: "ai", Imports: []string{"context"}, Embedding: []float64{0.7, 0.3}},
+				{Path: "internal/storage/storage.go", Summary: "Search logic", Chunks: []Chunk{{Ref: "internal/storage/storage.go:180-240", Content: "func SearchHybrid(query string) {}"}}, Embedding: []float64{0.95, 0.05}},
+			},
+			limit:       2,
+			wantTopPath: "internal/storage/storage.go",
+		},
+		{
+			name:           "natural language query applies long token boost",
+			query:          "How is tokenSplitPattern defined?",
+			queryEmbedding: []float64{1, 0},
+			entries: []FileEntry{
+				{Path: "internal/storage/storage.go", Summary: "Token splitting helpers", Chunks: []Chunk{{Ref: "internal/storage/storage.go:54-70", Content: "var tokenSplitPattern = regexp.MustCompile(`[^a-zA-Z0-9_]+`)"}}, Embedding: []float64{0.95, 0.05}},
+				{Path: "internal/ai/client.go", Summary: "AI client", Chunks: []Chunk{{Ref: "internal/ai/client.go:1-20", Content: "type Client struct{}"}}, Embedding: []float64{0.8, 0.2}},
+			},
+			limit:       3,
+			wantTopPath: "internal/storage/storage.go",
+		},
+		{
+			name:           "empty query fails",
+			query:          "",
+			queryEmbedding: []float64{1, 0},
+			entries:        []FileEntry{{Path: "a.go", Summary: "a", Embedding: []float64{1, 0}}},
+			limit:          1,
+			wantErr:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			index := &ProjectIndex{Files: make(map[string]FileEntry)}
+			for _, entry := range tt.entries {
+				if err := index.Upsert(entry); err != nil {
+					t.Fatalf("upsert failed: %v", err)
+				}
+			}
+
+			results, err := index.HybridSearch(tt.query, tt.queryEmbedding, tt.limit)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("hybrid search failed: %v", err)
+			}
+			if len(results) == 0 {
+				t.Fatal("expected at least one result")
+			}
+			if tt.wantTopPath != "" && results[0].Path != tt.wantTopPath {
+				t.Fatalf("top result mismatch: got %q want %q", results[0].Path, tt.wantTopPath)
+			}
+			if tt.wantTopPath == "internal/storage/storage.go" {
+				if results[0].Score <= 1.3 {
+					t.Fatalf("expected boosted score > 1.3, got %f", results[0].Score)
+				}
+				if results[0].MatchRef == "" || results[0].Match == "" {
+					t.Fatalf("expected matched chunk data, got ref=%q match=%q", results[0].MatchRef, results[0].Match)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectIndexHybridSearchWithThreshold(t *testing.T) {
+	t.Parallel()
+
+	index := &ProjectIndex{Files: make(map[string]FileEntry)}
+	entries := []FileEntry{
+		{Path: "high.go", Summary: "high relevance", Embedding: []float64{1, 0}},
+		{Path: "low.go", Summary: "low relevance", Embedding: []float64{0.2, 0.8}},
+	}
+	for _, entry := range entries {
+		if err := index.Upsert(entry); err != nil {
+			t.Fatalf("upsert failed: %v", err)
+		}
+	}
+
+	results, err := index.HybridSearchWithThreshold("high", []float64{1, 0}, 5, 0.15)
+	if err != nil {
+		t.Fatalf("hybrid search with threshold failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one high-confidence result")
+	}
+	if results[0].Path != "high.go" {
+		t.Fatalf("unexpected top result: got %q want high.go", results[0].Path)
+	}
+
+	strictResults, err := index.HybridSearchWithThreshold("high", []float64{1, 0}, 5, 3.0)
+	if err != nil {
+		t.Fatalf("hybrid search with strict threshold failed: %v", err)
+	}
+	if len(strictResults) != 0 {
+		t.Fatalf("expected zero results with strict threshold, got %d", len(strictResults))
 	}
 }

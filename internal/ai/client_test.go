@@ -386,10 +386,19 @@ func TestAnswerQuestionWithContext(t *testing.T) {
 		{
 			name:      "success",
 			status:    http.StatusOK,
-			response:  `{"choices":[{"message":{"content":"Use scanner chunking from internal/scanner/chunker.go."}}]}`,
+			response:  `{"choices":[{"message":{"content":"Use scanner chunking from internal/scanner/chunker.go [1]."}}]}`,
 			question:  "How is chunking implemented?",
 			context:   "Path: internal/scanner/chunker.go\nSummary: Chunking logic",
-			wantText:  "Use scanner chunking from internal/scanner/chunker.go.",
+			wantText:  "Use scanner chunking from internal/scanner/chunker.go [1].",
+			wantCalls: 1,
+		},
+		{
+			name:      "missing citation falls back",
+			status:    http.StatusOK,
+			response:  `{"choices":[{"message":{"content":"Chunking is implemented in scanner chunker."}}]}`,
+			question:  "How is chunking implemented?",
+			context:   "Path: internal/scanner/chunker.go\nSummary: Chunking logic",
+			wantText:  "Chunking is implemented in scanner chunker.",
 			wantCalls: 1,
 		},
 		{
@@ -407,6 +416,15 @@ func TestAnswerQuestionWithContext(t *testing.T) {
 			response: `{"choices":[{"message":{"content":"ok"}}]}`,
 			context:  "C",
 			wantErr:  true,
+		},
+		{
+			name:      "insufficient context short-circuit",
+			status:    http.StatusOK,
+			response:  `{"choices":[{"message":{"content":"irrelevant"}}]}`,
+			question:  "Q",
+			context:   "(no semantic context)",
+			wantText:  InformationNotFound,
+			wantCalls: 0,
 		},
 	}
 
@@ -460,7 +478,7 @@ func TestGenerateAnswer(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"answer from context"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"answer from context [1]"}}]}`))
 	}))
 	defer server.Close()
 
@@ -473,7 +491,7 @@ func TestGenerateAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate answer failed: %v", err)
 	}
-	if answer != "answer from context" {
+	if answer != "answer from context [1]" {
 		t.Fatalf("answer mismatch: got %q", answer)
 	}
 }

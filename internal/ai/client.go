@@ -15,7 +15,8 @@ import (
 
 const summaryPrompt = "Summarize this code in one short, professional sentence. Return strict JSON with keys: summary (string), bugs (array), suggestions (array)."
 const projectContextPrompt = "You are analyzing code in the context of this project tree:\n%s"
-const qaWithContextSystemPrompt = "You are an expert software engineering assistant. Answer using only the provided semantic context. If context is insufficient, say so clearly. Cite sources inline with [n] markers that map to the provided context entries."
+const qaWithContextSystemPrompt = "You are a Senior Go Developer. Use the provided context (code snippets and summaries) to answer the user's question. If the requested variable, constant, or function is present in the code snippets, explain its definition and purpose. Only say 'Information not found' if the context is completely irrelevant to the query."
+const InformationNotFound = "Information not found."
 
 const (
 	EmbeddingProviderOpenAI = "openai"
@@ -174,7 +175,11 @@ func (c *Client) AnswerQuestionWithContext(ctx context.Context, question, semant
 	}
 
 	if strings.TrimSpace(semanticContext) == "" {
-		return "", TransportError{Message: "semantic context is required"}
+		return InformationNotFound, nil
+	}
+
+	if strings.TrimSpace(semanticContext) == "(no semantic context)" {
+		return InformationNotFound, nil
 	}
 
 	requestBody := chatCompletionRequest{
@@ -203,6 +208,7 @@ func (c *Client) AnswerQuestionWithContext(ctx context.Context, question, semant
 				return "", answerErr
 			}
 
+			answer = normalizeGroundedAnswer(answer)
 			return answer, nil
 		}
 
@@ -496,6 +502,25 @@ func extractFirstMessage(completion chatCompletionResponse) (string, error) {
 	}
 
 	return content, nil
+}
+
+func normalizeGroundedAnswer(answer string) string {
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return InformationNotFound
+	}
+
+	lower := strings.ToLower(answer)
+	if strings.TrimSpace(lower) == "information not found" ||
+		strings.TrimSpace(lower) == "information not found." ||
+		strings.Contains(lower, "insufficient context") ||
+		strings.Contains(lower, "not enough context") ||
+		strings.Contains(lower, "cannot determine") ||
+		strings.Contains(lower, "unable to determine") {
+		return InformationNotFound
+	}
+
+	return answer
 }
 
 func validateRequiredFields(payload map[string]any, required []string) error {

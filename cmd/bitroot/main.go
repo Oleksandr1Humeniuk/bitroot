@@ -47,6 +47,8 @@ type citationSource struct {
 	Score float64
 }
 
+const minSemanticScoreCutoff = 0.15
+
 func main() {
 	startTime := time.Now()
 
@@ -172,7 +174,8 @@ func main() {
 
 		cached, ok := projectIndex.Get(metadata.Path)
 		hasEmbedding := len(cached.Embedding) > 0
-		unchanged := ok && cached.Hash == metadata.Hash && hasEmbedding
+		hasChunks := len(cached.Chunks) > 0
+		unchanged := ok && cached.Hash == metadata.Hash && hasEmbedding && hasChunks
 
 		indexMu.Lock()
 		_, processing := inFlight[metadata.Path]
@@ -220,6 +223,8 @@ func main() {
 				return
 			}
 
+			fileContext := scanner.ExtractFileContext(md.Language, string(code))
+
 			chunkSummaries := make([]string, 0, len(chunks))
 			for _, chunk := range chunks {
 				atomic.AddInt64(&tel.totalPromptTokensHint, int64(chunk.TokenEstimate))
@@ -266,6 +271,10 @@ func main() {
 				Hash:      md.Hash,
 				Language:  md.Language,
 				Summary:   fileSummary,
+				Package:   fileContext.PackageName,
+				Imports:   append([]string(nil), fileContext.PrimaryImports...),
+				Header:    fileContext.Header,
+				Chunks:    buildStoredChunks(chunks, 100, 8000),
 				Refs:      chunkRefs(chunks, 5),
 				Embedding: embedding,
 				UpdatedAt: time.Now().UTC(),
@@ -480,16 +489,27 @@ func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, p
 		return err
 	}
 
-	results, err := projectIndex.Search(queryEmbedding, topK)
+	results, err := projectIndex.HybridSearchWithThreshold(query, queryEmbedding, topK, minSemanticScoreCutoff)
 	if err != nil {
 		return err
 	}
+	avgMatchScore, chunkRecallProxy := retrievalObservability(results, topK)
+	logger.Info(
+		"retrieval observability",
+		"query", query,
+		"matches", len(results),
+		"requested_topk", topK,
+		"average_match_score", fmt.Sprintf("%.4f", avgMatchScore),
+		"chunk_recall_proxy", fmt.Sprintf("%.4f", chunkRecallProxy),
+	)
+
 	if len(results) == 0 {
-		fmt.Printf("No semantic data found. Please run a full scan first without the --ask flag.\n")
+		fmt.Printf("No high-confidence semantic data found (min score %.2f). Please run a full scan first without the --ask flag.\n", minSemanticScoreCutoff)
 		return nil
 	}
 
 	semanticContext, sources := buildRAGContext(results)
+	fmt.Printf("\n--- DEBUG: RAG CONTEXT SENT TO AI ---\n%s\n--------------------------------------\n", semanticContext)
 	answer, err := aiClient.GenerateAnswer(ctx, query, semanticContext)
 	if err != nil {
 		return err
@@ -530,6 +550,31 @@ func buildRAGContext(results []storage.SearchResult) (string, []citationSource) 
 	for i, result := range results {
 		b.WriteString(fmt.Sprintf("[%d] Path: %s\n", i+1, result.Path))
 		b.WriteString(fmt.Sprintf("Score: %.4f\n", result.Score))
+		if strings.TrimSpace(result.MatchRef) != "" {
+			b.WriteString("Matched chunk: ")
+			b.WriteString(strings.TrimSpace(result.MatchRef))
+			b.WriteString("\n")
+		}
+		if strings.TrimSpace(result.Match) != "" {
+			b.WriteString("Matched code:\n")
+			b.WriteString(strings.TrimSpace(result.Match))
+			b.WriteString("\n")
+		}
+		if strings.TrimSpace(result.Package) != "" {
+			b.WriteString("Package: ")
+			b.WriteString(strings.TrimSpace(result.Package))
+			b.WriteString("\n")
+		}
+		if len(result.Imports) > 0 {
+			b.WriteString("Primary imports: ")
+			b.WriteString(strings.Join(result.Imports, ", "))
+			b.WriteString("\n")
+		}
+		if strings.TrimSpace(result.Header) != "" {
+			b.WriteString("File header: ")
+			b.WriteString(strings.TrimSpace(result.Header))
+			b.WriteString("\n")
+		}
 		if len(result.Refs) > 0 {
 			b.WriteString("Line references: ")
 			b.WriteString(strings.Join(result.Refs, ", "))
@@ -569,6 +614,54 @@ func chunkRefs(chunks []scanner.CodeChunk, max int) []string {
 	}
 
 	return refs
+}
+
+func buildStoredChunks(chunks []scanner.CodeChunk, maxChunks int, maxBytesPerChunk int) []storage.Chunk {
+	if len(chunks) == 0 || maxChunks <= 0 {
+		return nil
+	}
+
+	limit := maxChunks
+	if len(chunks) < limit {
+		limit = len(chunks)
+	}
+
+	out := make([]storage.Chunk, 0, limit)
+	for i := 0; i < limit; i++ {
+		content := strings.TrimSpace(chunks[i].Content)
+		if content == "" {
+			continue
+		}
+		if maxBytesPerChunk > 0 && len(content) > maxBytesPerChunk {
+			content = strings.TrimSpace(content[:maxBytesPerChunk]) + "..."
+		}
+		out = append(out, storage.Chunk{Ref: chunks[i].Location(), Content: content})
+	}
+
+	return out
+}
+
+func retrievalObservability(results []storage.SearchResult, requestedTopK int) (float64, float64) {
+	if requestedTopK < 1 {
+		requestedTopK = 1
+	}
+
+	if len(results) == 0 {
+		return 0, 0
+	}
+
+	totalScore := 0.0
+	for _, result := range results {
+		totalScore += result.Score
+	}
+
+	avgScore := totalScore / float64(len(results))
+	recallProxy := float64(len(results)) / float64(requestedTopK)
+	if recallProxy > 1 {
+		recallProxy = 1
+	}
+
+	return avgScore, recallProxy
 }
 
 func loadProjectIndex(logger *slog.Logger, indexRoot string) (*storage.ProjectIndex, string, bool) {
