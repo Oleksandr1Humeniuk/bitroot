@@ -279,3 +279,87 @@ func TestProjectIndexSaveWritesEmbeddingsAlongsideSummary(t *testing.T) {
 		t.Fatalf("embedding length mismatch: got %d want 3", len(embedding))
 	}
 }
+
+func TestCosineSimilarity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		a       []float64
+		b       []float64
+		wantOK  bool
+		wantMin float64
+		wantMax float64
+	}{
+		{
+			name:    "identical vectors",
+			a:       []float64{1, 2, 3},
+			b:       []float64{1, 2, 3},
+			wantOK:  true,
+			wantMin: 0.999999,
+			wantMax: 1.000001,
+		},
+		{
+			name:    "orthogonal vectors",
+			a:       []float64{1, 0},
+			b:       []float64{0, 1},
+			wantOK:  true,
+			wantMin: -0.000001,
+			wantMax: 0.000001,
+		},
+		{
+			name:   "dimension mismatch",
+			a:      []float64{1, 2},
+			b:      []float64{1, 2, 3},
+			wantOK: false,
+		},
+		{
+			name:   "zero norm vector",
+			a:      []float64{0, 0},
+			b:      []float64{1, 1},
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := CosineSimilarity(tt.a, tt.b)
+			if ok != tt.wantOK {
+				t.Fatalf("ok mismatch: got %t want %t", ok, tt.wantOK)
+			}
+
+			if !tt.wantOK {
+				return
+			}
+
+			if got < tt.wantMin || got > tt.wantMax {
+				t.Fatalf("similarity out of bounds: got %f want between %f and %f", got, tt.wantMin, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestProjectIndexGet(t *testing.T) {
+	t.Parallel()
+
+	index := &ProjectIndex{Files: make(map[string]FileEntry)}
+	entry := FileEntry{Path: "src/main.go", Summary: "entry"}
+	if err := index.Upsert(entry); err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+
+	got, ok := index.Get("src/main.go")
+	if !ok {
+		t.Fatal("expected entry to exist")
+	}
+	if got.Path != entry.Path || got.Summary != entry.Summary {
+		t.Fatalf("entry mismatch: got %+v want %+v", got, entry)
+	}
+
+	if _, ok := index.Get("missing.go"); ok {
+		t.Fatal("expected missing entry to be absent")
+	}
+}

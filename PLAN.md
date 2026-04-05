@@ -37,9 +37,9 @@ Phase 2: Context & Semantic Intelligence [IN PROGRESS]
 [x] Vector Storage: Implementation of vector persistence (1536-dim vectors in JSON).
 
 2.3 Retrieval & Query Workflow [ACTIVE]
-[ ] Similarity Engine: Implement Cosine Similarity for vector comparison.
+[x] Similarity Engine: Implement Cosine Similarity for vector comparison.
 
-[ ] CLI "ask" Command: New sub-command for natural language queries.
+[x] CLI "ask" Command: New sub-command for natural language queries.
 
 [ ] Context Injection: RAG logic to feed top-K relevant chunks into the prompt.
 
@@ -62,4 +62,4 @@ AI: internal/ai (Handling chat & embeddings)
 Storage: internal/storage (Managing JSON vector database)
 
 Next Atomic Step
-Implement Task 2.3.1: Add CosineSimilarity function to internal/storage to enable ranking of code chunks against a user query.
+Implement Task 2.3.3: Add context injection to build RAG prompts from top-K semantic results.

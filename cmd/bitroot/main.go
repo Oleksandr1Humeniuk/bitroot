@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -43,6 +44,8 @@ func main() {
 	startTime := time.Now()
 
 	path := flag.String("path", ".", "Directory path to scan")
+	ask := flag.String("ask", "", "Natural language query over the vector store")
+	topK := flag.Int("topk", 5, "Maximum number of semantic matches returned by --ask")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -85,10 +88,6 @@ func main() {
 		os.Getenv("EMBEDDING_MODEL"),
 	)
 
-	if err := aiClient.Ping(baseCtx); err != nil {
-		log.Fatal(err)
-	}
-
 	rootDir := *path
 	rootInfo, err := os.Stat(rootDir)
 	if err != nil {
@@ -105,31 +104,19 @@ func main() {
 		indexRoot = filepath.Dir(rootDir)
 	}
 
-	indexPath := filepath.Join(indexRoot, ".bitroot_vector_store.json")
-	legacyIndexPath := filepath.Join(indexRoot, ".bitroot_index.json")
-	projectIndex := &storage.ProjectIndex{}
-	if err := projectIndex.Load(indexPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			if legacyErr := projectIndex.Load(legacyIndexPath); legacyErr != nil {
-				projectIndex = &storage.ProjectIndex{
-					ProjectRoot: indexRoot,
-					Files:       make(map[string]storage.FileEntry),
-				}
-			} else {
-				logger.Info("migrated legacy index into vector store", "legacy_path", legacyIndexPath)
-			}
-		} else {
-			logger.Warn("failed to load index, starting fresh", "path", indexPath, "error", err)
-			projectIndex = &storage.ProjectIndex{
-				ProjectRoot: indexRoot,
-				Files:       make(map[string]storage.FileEntry),
-			}
+	if strings.TrimSpace(*ask) != "" {
+		if err := runAskMode(baseCtx, logger, aiClient, indexRoot, *ask, *topK); err != nil {
+			logger.Error("ask command failed", "error", err)
+			os.Exit(1)
 		}
+		return
 	}
-	if projectIndex.Files == nil {
-		projectIndex.Files = make(map[string]storage.FileEntry)
+
+	if err := aiClient.Ping(baseCtx); err != nil {
+		log.Fatal(err)
 	}
-	projectIndex.ProjectRoot = indexRoot
+
+	projectIndex, indexPath := loadProjectIndex(logger, indexRoot)
 
 	workerCount := 4
 	logger.Info("starting scanner", "path", rootDir, "workers", workerCount)
@@ -166,10 +153,11 @@ func main() {
 			continue
 		}
 
-		indexMu.Lock()
-		cached, ok := projectIndex.Files[metadata.Path]
+		cached, ok := projectIndex.Get(metadata.Path)
 		hasEmbedding := len(cached.Embedding) > 0
 		unchanged := ok && cached.Hash == metadata.Hash && hasEmbedding
+
+		indexMu.Lock()
 		_, processing := inFlight[metadata.Path]
 		if !unchanged && !processing {
 			inFlight[metadata.Path] = struct{}{}
@@ -444,4 +432,80 @@ func trackAIError(tel *telemetry, err error) {
 	default:
 		atomic.AddInt64(&tel.transportErrors, 1)
 	}
+}
+
+func runAskMode(ctx context.Context, logger *slog.Logger, aiClient *ai.Client, indexRoot, query string, topK int) error {
+	if strings.TrimSpace(query) == "" {
+		return errors.New("ask query is required")
+	}
+
+	if topK < 1 {
+		topK = 5
+	}
+
+	projectIndex, _ := loadProjectIndex(logger, indexRoot)
+	if len(projectIndex.Files) == 0 {
+		return errors.New("vector store is empty; run scan first")
+	}
+
+	queryEmbedding, err := aiClient.EmbedText(ctx, query)
+	if err != nil {
+		return err
+	}
+
+	results, err := projectIndex.SearchSimilar(queryEmbedding, topK, "")
+	if err != nil {
+		return err
+	}
+
+	if len(results) == 0 {
+		logger.Info("no semantic matches found", "query", query)
+		return nil
+	}
+
+	fmt.Printf("Query: %s\n", query)
+	fmt.Printf("Top %d semantic matches:\n", len(results))
+	for i, result := range results {
+		fmt.Printf("%d. %s (score=%.4f)\n", i+1, result.Path, result.Score)
+		if result.Summary != "" {
+			fmt.Printf("   %s\n", result.Summary)
+		}
+	}
+
+	return nil
+}
+
+func loadProjectIndex(logger *slog.Logger, indexRoot string) (*storage.ProjectIndex, string) {
+	indexPath := filepath.Join(indexRoot, ".bitroot_vector_store.json")
+	legacyIndexPath := filepath.Join(indexRoot, ".bitroot_index.json")
+	projectIndex := &storage.ProjectIndex{}
+
+	if err := projectIndex.Load(indexPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if legacyErr := projectIndex.Load(legacyIndexPath); legacyErr != nil {
+				if !errors.Is(legacyErr, os.ErrNotExist) {
+					logger.Warn("failed to load legacy index, starting fresh", "path", legacyIndexPath, "error", legacyErr)
+				}
+				projectIndex = &storage.ProjectIndex{
+					ProjectRoot: indexRoot,
+					Files:       make(map[string]storage.FileEntry),
+				}
+			} else {
+				logger.Info("migrated legacy index into vector store", "legacy_path", legacyIndexPath)
+			}
+		} else {
+			logger.Warn("failed to load index, starting fresh", "path", indexPath, "error", err)
+			projectIndex = &storage.ProjectIndex{
+				ProjectRoot: indexRoot,
+				Files:       make(map[string]storage.FileEntry),
+			}
+		}
+	}
+
+	if projectIndex.Files == nil {
+		projectIndex.Files = make(map[string]storage.FileEntry)
+	}
+	projectIndex.ProjectRoot = indexRoot
+
+	return projectIndex, indexPath
 }

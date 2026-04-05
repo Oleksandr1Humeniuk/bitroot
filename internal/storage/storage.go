@@ -103,6 +103,14 @@ func (p *ProjectIndex) Upsert(entry FileEntry) error {
 	return nil
 }
 
+func (p *ProjectIndex) Get(path string) (FileEntry, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	entry, ok := p.Files[path]
+	return entry, ok
+}
+
 func (p *ProjectIndex) SearchSimilar(query []float64, limit int, excludePath string) ([]SearchResult, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -132,7 +140,7 @@ func (p *ProjectIndex) SearchSimilar(query []float64, limit int, excludePath str
 			continue
 		}
 
-		score, ok := cosineSimilarity(query, entry.Embedding)
+		score, ok := CosineSimilarity(query, entry.Embedding)
 		if !ok {
 			continue
 		}
@@ -163,19 +171,18 @@ func (p *ProjectIndex) ensureVectorDimension() {
 	if p.VectorDimension > 0 {
 		return
 	}
-
-	for _, entry := range p.Files {
-		if len(entry.Embedding) > 0 {
-			p.VectorDimension = len(entry.Embedding)
-			return
-		}
-	}
+	p.VectorDimension = p.inferVectorDimensionNoLock()
 }
 
 func (p *ProjectIndex) vectorDimensionNoLock() int {
 	if p.VectorDimension > 0 {
 		return p.VectorDimension
 	}
+
+	return p.inferVectorDimensionNoLock()
+}
+
+func (p *ProjectIndex) inferVectorDimensionNoLock() int {
 
 	for _, entry := range p.Files {
 		if len(entry.Embedding) > 0 {
@@ -186,7 +193,9 @@ func (p *ProjectIndex) vectorDimensionNoLock() int {
 	return 0
 }
 
-func cosineSimilarity(a, b []float64) (float64, bool) {
+// CosineSimilarity computes cosine similarity between two vectors.
+// It returns ok=false for invalid or zero-norm vectors.
+func CosineSimilarity(a, b []float64) (float64, bool) {
 	if len(a) == 0 || len(a) != len(b) {
 		return 0, false
 	}
