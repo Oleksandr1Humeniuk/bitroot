@@ -82,7 +82,7 @@ func main() {
 
 	aiClient.ConfigureEmbeddings(
 		os.Getenv("AI_EMBEDDING_PROVIDER"),
-		os.Getenv("AI_EMBEDDING_MODEL"),
+		os.Getenv("EMBEDDING_MODEL"),
 	)
 
 	if err := aiClient.Ping(baseCtx); err != nil {
@@ -105,13 +105,18 @@ func main() {
 		indexRoot = filepath.Dir(rootDir)
 	}
 
-	indexPath := filepath.Join(indexRoot, ".bitroot_index.json")
+	indexPath := filepath.Join(indexRoot, ".bitroot_vector_store.json")
+	legacyIndexPath := filepath.Join(indexRoot, ".bitroot_index.json")
 	projectIndex := &storage.ProjectIndex{}
 	if err := projectIndex.Load(indexPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			projectIndex = &storage.ProjectIndex{
-				ProjectRoot: indexRoot,
-				Files:       make(map[string]storage.FileEntry),
+			if legacyErr := projectIndex.Load(legacyIndexPath); legacyErr != nil {
+				projectIndex = &storage.ProjectIndex{
+					ProjectRoot: indexRoot,
+					Files:       make(map[string]storage.FileEntry),
+				}
+			} else {
+				logger.Info("migrated legacy index into vector store", "legacy_path", legacyIndexPath)
 			}
 		} else {
 			logger.Warn("failed to load index, starting fresh", "path", indexPath, "error", err)
@@ -251,16 +256,29 @@ func main() {
 				atomic.AddInt64(&tel.embeddingsGenerated, 1)
 			}
 
-			indexMu.Lock()
-			projectIndex.Files[md.Path] = storage.FileEntry{
+			upsertErr := projectIndex.Upsert(storage.FileEntry{
 				Path:      md.Path,
 				Hash:      md.Hash,
 				Language:  md.Language,
 				Summary:   fileSummary,
 				Embedding: embedding,
 				UpdatedAt: time.Now().UTC(),
+			})
+			if upsertErr != nil {
+				atomic.AddInt64(&tel.filesFailed, 1)
+				logger.Warn("vector upsert failed", "path", md.Path, "error", upsertErr)
+				return
 			}
-			indexMu.Unlock()
+
+			if len(embedding) > 0 {
+				similar, searchErr := projectIndex.SearchSimilar(embedding, 3, md.Path)
+				if searchErr != nil {
+					logger.Warn("vector search failed", "path", md.Path, "error", searchErr)
+				} else if len(similar) > 0 {
+					logger.Info("semantic neighbors", "path", md.Path, "neighbor", similar[0].Path, "score", similar[0].Score)
+				}
+			}
+
 			atomic.AddInt64(&tel.filesAnalyzed, 1)
 
 			logger.Info("ai analysis", "file", md.Path, "lang", md.Language, "chunks", len(chunks), "summary", fileSummary)

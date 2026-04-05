@@ -1,83 +1,65 @@
-# BitRoot: Operational Plan
+BitRoot: Operational Plan
+Current Status: Phase 2.2 — Semantic Retrieval & QA
+Tech Stack: Go 1.26+, OpenRouter (Qwen + OpenAI Embeddings), JSON Vector Store
 
-**Current Phase**: Phase 2.1 — RAG & Semantic Context
-**Status**: [ACTIVE]
+Phase 1: Core AI Infrastructure [COMPLETED]
+1.1 Foundation & Connectivity
+[x] Initial repository setup (Go modules, .env, .gitignore).
 
----
+[x] Project structure skeleton (cmd/, internal/).
 
-## Phase 1 — AI Integration [COMPLETED]
+[x] OpenAI-compatible HTTP client for internal/ai.
 
-- [x] 1.1 Create `scripts/check.sh` (fmt, vet, test) and update `AGENTS.md`.
-- [x] 1.2 Setup `internal/ai` package and API client.
-- [x] 1.3 Implement `.env` support for API credentials.
+[x] Smart scanner with file filtering (node_modules, binary, etc.).
 
----
+1.2 Production-Grade Reliability
+[x] Resilience: Exponential Backoff & Retry logic for 429/5xx errors.
 
-## Phase 1.1 — Reliability & Observability [COMPLETED]
+[x] Timeouts: Hard context deadlines for AI requests.
 
-- [x] 1.1.1 Resilient AI Client: Implement middleware for internal/ai with support for:
-      Exponential Backoff: Automatic retries for 429 (Rate Limit) and 5xx (Server) errors.
-      Hard Timeout: Prevent the CLI from hanging indefinitely on a single file.
+[x] Structured Output: JSON Mode enforcement for schema-validated responses.
 
-- [x] 1.1.2 Token & Cost Tracking: Implement a response interceptor in internal/ai to extract and log prompt_tokens and completion_tokens.
+[x] Observability: Token usage tracking and cost telemetry dashboard.
 
-- [x] 1.1.3 Structured Output Enforcement: Transition the system prompt to JSON Mode to ensure internal/scanner receives schema-validated data instead of raw text.
+Phase 2: Context & Semantic Intelligence [IN PROGRESS]
+2.1 File Analysis & Caching [COMPLETED]
+[x] Language detection and SHA-256 content hashing.
 
-- [x] 1.1.4 Telemetry & Reporting: Display a summary dashboard after scanning (Execution time, total tokens used, and files skipped via cache).
+[x] Persistence layer: .bitroot_index.json for skipping unchanged files.
 
----
+[x] Project-level context (building the project tree for system prompts).
 
-## Phase 2 — Context & Metadata [COMPLETED]
+2.2 RAG Foundation (Knowledge Base) [COMPLETED]
+[x] Smart Chunking: Logical splitting of large files with line-preservation.
 
-- [x] 2.1 Implement file type filtering (ignore `node_modules`, `.git`, binary files).
-- [x] 2.2 Add Language Detection to metadata (Go, TS, JS, etc.).
-- [x] 2.3 Implement project-level context (system prompt with project tree).
+[x] Embeddings: Integration with dedicated embedding models (Ollama/OpenAI).
 
----
+[x] Vector Storage: Implementation of vector persistence (1536-dim vectors in JSON).
 
-## Phase 2.4 — Knowledge Base & Cache [COMPLETED]
+2.3 Retrieval & Query Workflow [ACTIVE]
+[ ] Similarity Engine: Implement Cosine Similarity for vector comparison.
 
-- [x] 3.1 Implement SHA-256 hashing for file contents in `internal/scanner`.
-- [x] 3.2 Create `internal/storage` for index persistence (JSON-based).
-- [x] 3.3 Add logic in `main.go` to skip AI processing if file hash matches stored index.
+[ ] CLI "ask" Command: New sub-command for natural language queries.
 
----
+[ ] Context Injection: RAG logic to feed top-K relevant chunks into the prompt.
 
-## Phase 2.1 — RAG & Semantic Context (Next)
+[ ] Source Citations: AI responses with file paths and line references.
 
-- [x] 2.1.1 Chunking Strategy: Develop logic to split large source files into logical blocks (functions, classes, or blocks) to fit model context limits.
+Phase 3: Advanced Agentic Features [BACKLOG]
+[ ] Auto-Fixer: Agentic loop for suggesting and applying code refactoring.
 
-- [x] 2.1.2 Embeddings Integration: Integrate embedding models (via Ollama or OpenAI) to represent code semantically.
+[ ] Cross-File Mapping: Understanding dependencies across the whole codebase.
 
-- [ ] 2.1.3 Vector Store Implementation: Replace storage/index.json with a local vector database or an embedded semantic search engine (e.g., ChromaDB or a native Go implementation).
+[ ] Multi-Model Support: Dynamic model selection based on task complexity.
 
----
+Technical Context
+Entrypoint: cmd/bitroot/main.go
 
-## Archived
+Scanner: internal/scanner (Handling chunks & hashing)
 
-### Foundation
+AI: internal/ai (Handling chat & embeddings)
 
-- [x] Initialize repository (.gitignore, .env.example, go.mod).
-- [x] Define project structure (`cmd/`, `internal/`).
+Storage: internal/storage (Managing JSON vector database)
 
-### Phase 0 — CLI Foundation & Agentic Workflow
-
-- [x] 1. Rewrite PLAN.md into this operational format.
-- [x] 2. Implement `internal/scanner` skeleton (Struct & Interface).
-- [x] 3. Implement directory traversal using `path/filepath`.
-- [x] 4. Connect scanner to `cmd/bitroot/main.go`.
-- [x] 5. Add CLI flag for `--path` (default: ".").
-- [x] 6. Add basic `slog` integration.
-
----
-
-## Technical Context (Current)
-
-- Entrypoint: `cmd/bitroot/main.go`
-- Scanner package: `internal/scanner`
-- AI package: `internal/ai`
-- Storage package: `internal/storage`
-
-## Next Atomic Step
-
-Implement task #2.1.3: vector store implementation for semantic search.
+Next Atomic Step
+Implement Task 2.3.1: Add CosineSimilarity function to internal/storage to enable ranking of code chunks against a user query.

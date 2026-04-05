@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -220,15 +221,17 @@ func TestEmbedText(t *testing.T) {
 		provider  string
 		model     string
 		handler   http.HandlerFunc
+		checkBody bool
 		wantErr   bool
 		wantType  string
 		wantLen   int
 		wantCalls int32
 	}{
 		{
-			name:     "openai provider success",
-			provider: EmbeddingProviderOpenAI,
-			model:    "text-embedding-3-small",
+			name:      "openai provider success",
+			provider:  EmbeddingProviderOpenAI,
+			model:     "text-embedding-3-small",
+			checkBody: true,
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/v1/embeddings" {
 					t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -243,9 +246,10 @@ func TestEmbedText(t *testing.T) {
 			wantCalls: 1,
 		},
 		{
-			name:     "ollama provider success",
-			provider: EmbeddingProviderOllama,
-			model:    "nomic-embed-text",
+			name:      "ollama provider success",
+			provider:  EmbeddingProviderOllama,
+			model:     "nomic-embed-text",
+			checkBody: true,
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/embeddings" {
 					t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -293,6 +297,33 @@ func TestEmbedText(t *testing.T) {
 			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
+
+				if tt.checkBody {
+					rawBody, readErr := io.ReadAll(r.Body)
+					if readErr != nil {
+						t.Fatalf("read body failed: %v", readErr)
+					}
+
+					var payload map[string]any
+					if unmarshalErr := json.Unmarshal(rawBody, &payload); unmarshalErr != nil {
+						t.Fatalf("invalid json body: %v", unmarshalErr)
+					}
+
+					modelValue, ok := payload["model"]
+					if !ok {
+						t.Fatalf("missing model field in payload: %s", string(rawBody))
+					}
+
+					modelString, ok := modelValue.(string)
+					if !ok {
+						t.Fatalf("model must be string, got %T", modelValue)
+					}
+
+					if modelString != tt.model {
+						t.Fatalf("model mismatch: got %q want %q", modelString, tt.model)
+					}
+				}
+
 				tt.handler(w, r)
 			}))
 			defer server.Close()
